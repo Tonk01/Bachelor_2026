@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
 import json
+from typing import Iterator
 
 @dataclass
 class Event:
@@ -43,27 +43,39 @@ def load_event(path: Path) -> Event:
             path = str(path),
         )
     
-def find_event_files(*roots: str | Path) -> list[Path]:
-    event_files = []
+def iter_event_files(*roots: str | Path) -> Iterator[Path]:
+    seen: set[Path] = set()
 
     for root in roots:
         root = Path(root)
-        
+
+        if not root.exists():
+            continue
+
         for path in root.rglob("*.json"):
-            if "events" in path.parts and "eventids" not in path.parts:
-                event_files.append(path)
-            
-    return event_files
+            resolved_path = path.resolve()
+            if (
+                "events" in path.parts
+                and "eventids" not in path.parts
+                and resolved_path not in seen
+            ):
+                seen.add(resolved_path)
+                yield path
 
-def load_all_events(*roots, limit = None):
-    events = []
-    errors = []
 
-    for path in find_event_files(*roots):
+def find_event_files(*roots: str | Path) -> list[Path]:
+    return list(iter_event_files(*roots))
+
+
+def load_all_events(*roots: str | Path, limit: int | None = None) -> tuple[list[Event], list[tuple[str, str]]]:
+    events: list[Event] = []
+    errors: list[tuple[str, str]] = []
+
+    for path in iter_event_files(*roots):
         if limit is not None and len(events) >= limit:
             return events, errors
-            
-        try:     
+
+        try:
             events.append(load_event(path))
         except Exception as e:
             errors.append((str(path), str(e)))
