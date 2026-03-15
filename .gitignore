@@ -214,7 +214,4 @@ __marimo__/
 **/data/processed/
 **/data/splits/
 
-# Project data outputs
-data/
-
 sites.txt
