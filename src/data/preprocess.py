@@ -4,11 +4,16 @@ from dataclasses import dataclass
 from typing import Iterable
 import numpy as np
 
+from scipy.signal import resample
+
+
 from .data_loader import Event
+
 
 @dataclass(frozen = True)
 class PreprocessingConfig:
     allowed_samplerates: tuple[int, ...] = (400, 1000)
+    target_samplerate: int = 400  
     normalize: bool = True
     norm_eps: float = 1e-8
 
@@ -32,7 +37,36 @@ class EventProcessor:
         if samplerate not in self.allowed_samplerates:
 
             allowed = sorted(self.allowed_samplerates)
-            raise ValueError("Samplerate {samplerate} not allowed")
+            
+            raise ValueError(
+                f"Samplerate {samplerate} not allowed, Allowed samplerates  : {allowed}"
+            )
+        
+    def resample_signal(
+        self,
+        signal: list[float] | np.ndarray,
+        from_samplerate: int,
+    ) -> np.ndarray:
+        
+        x = np.asarray(signal, dtype = np.float32)
+    
+        if x.ndim != 1:
+            raise ValueError("signal size must be 1D")
+    
+        if x.size == 0:
+            raise ValueError("Signal is empty")
+        
+        if from_samplerate == self.config.target_samplerate:
+            return x
+    
+        target_n_samplesrate = int(x.size * self.config.target_samplerate / from_samplerate)
+    
+        if target_n_samplesrate <= 0:
+            raise ValueError("Resampled signal would be empty")
+        
+        x_resampled = resample(x, target_n_samplesrate)
+        return np.asarray(x_resampled, dtype = np.float32)
+
 
     def preprocess_signal(self, signal: list[float]) -> np.ndarray:
         x = np.asarray(signal, dtype = np.float32)
@@ -59,17 +93,20 @@ class EventProcessor:
     
     def preprocess_event(self, event: Event) -> ProcessedEvent:
         self.valid_samplerate(event.samplerate)
-        
-        x = self.preprocess_signal(event.signal)
+
+        x = self.resample_signal(event.signal, event.samplerate)
+        x = self.preprocess_signal(x)
 
         return ProcessedEvent(
             eventid = event.eventid,
             valvetag = event.valvetag,
             sitename = event.sitename,
-            samplerate = event.samplerate,
+            
+            samplerate = self.config.target_samplerate,
             signal = x,
             n_samples = int(x.size),
-            duration_sec = float(x.size / event.samplerate),
+            
+            duration_sec = float(x.size / self.config.target_samplerate),
             path = event.path,
         )
 
