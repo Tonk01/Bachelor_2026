@@ -6,3 +6,4 @@ tensorflow
 matplotlib
 
 requests
+pytest
