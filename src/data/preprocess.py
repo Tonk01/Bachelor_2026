@@ -8,7 +8,7 @@ from .data_loader import Event
 
 @dataclass(frozen = True)
 class PreprocessingConfig:
-    expected_samplerate: int = 400
+    allowed_samplerates: tuple[int, ...] = (400, 1000)
     normalize: bool = True
     norm_eps: float = 1e-8
 
@@ -23,9 +23,16 @@ class ProcessedEvent:
     duration_sec: float
     path: str
 
-class EventProcessor400Hz:
+class EventProcessor:
     def __init__(self, config: PreprocessingConfig | None = None) -> None:
         self.config = config or PreprocessingConfig()
+        self.allowed_samplerates = set(self.config.allowed_samplerates)
+
+    def valid_samplerate(self, samplerate: int) -> None:
+        if samplerate not in self.allowed_samplerates:
+
+            allowed = sorted(self.allowed_samplerates)
+            raise ValueError("Samplerate {samplerate} not allowed")
 
     def preprocess_signal(self, signal: list[float]) -> np.ndarray:
         x = np.asarray(signal, dtype = np.float32)
@@ -35,6 +42,9 @@ class EventProcessor400Hz:
         
         if x.size == 0:
             raise ValueError("Signal is empty")
+        
+        if not np.isfinite(x).all():
+            raise ValueError("Signal has NaN or inf")
         
         if self.config.normalize:
             mean = float(x.mean())
@@ -48,8 +58,7 @@ class EventProcessor400Hz:
         return x
     
     def preprocess_event(self, event: Event) -> ProcessedEvent:
-        if event.samplerate != self.config.expected_samplerate:
-            raise ValueError(f"Expected {self.config.expected_samplerate}, got {event.samplerate}")
+        self.valid_samplerate(event.samplerate)
         
         x = self.preprocess_signal(event.signal)
 
@@ -73,9 +82,6 @@ class EventProcessor400Hz:
         errors: list[tuple[str, str]] = []
 
         for event in events:
-            if event.samplerate != self.config.expected_samplerate:
-                continue
-
             try:
                 processed.append(self.preprocess_event(event))
             except Exception as e:
