@@ -23,10 +23,10 @@ class PRPResult:
 @dataclass(frozen = True)
 class BPConfig:
     smooth_ms: float = 10.0
-    search_start_offset_ms: float = 500.0
-    search_end_ratio: float = 0.60
-    min_motion_ms: float = 12.0
-    slope_sigma_mult: float = 2.0
+    search_start_offset_ms: float = 400.0
+    search_end_ratio: float = 0.75
+    peak_sigma_mult: float = 3.0
+    local_window_ms: float = 25.0
     min_index: int = 0
 
 
@@ -178,48 +178,51 @@ def detect_bp(
 
     smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
     offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
-    min_motion_n = ms_to_samples(cfg.min_motion_ms, samplerate)
+    local_window_n = ms_to_samples(cfg.local_window_ms, samplerate)
 
     x_smooth = moving_avg(x, smooth_n)
-    dx = np.diff(x_smooth, prepend=x_smooth[0])
+    d1 = np.gradient(x_smooth)
+    d2 = np.gradient(d1)
+    abs_d2 = np.abs(d2)
 
-    search_start = max(cfg.min_index, prp_index + offset_n)
     search_end = min(int(round(x.size * cfg.search_end_ratio)), x.size)
+    primary_start = max(cfg.min_index, prp_index + offset_n)
+    fallback_start = max(cfg.min_index, prp_index + 1)
 
-    if search_end <= search_start + min_motion_n:
-        fallback_start = max(cfg.min_index, prp_index + 1)
-        if search_end <= fallback_start + min_motion_n:
-            return BPResult(bp_index=None, confidence=0.0, reason="search window too short")
-        search_start = fallback_start
+    if search_end <= fallback_start + local_window_n:
+        return BPResult(bp_index=None, confidence=0.0, reason="search window too short")
 
-    post_prp = dx[search_start:search_end]
-    if post_prp.size == 0:
-        return BPResult(bp_index=None, confidence=0.0, reason="no post-prp signal")
-
-    direction = 1.0 if float(np.mean(post_prp)) >= 0.0 else -1.0
-
-    baseline_start = max(0, prp_index - min_motion_n)
-    baseline = dx[baseline_start:prp_index]
+    baseline_start = max(0, prp_index - local_window_n)
+    baseline = abs_d2[baseline_start:prp_index]
     if baseline.size == 0:
-        baseline = dx[:min_motion_n]
+        baseline = abs_d2[:local_window_n]
 
-    slope_threshold = cfg.slope_sigma_mult * safe_std(baseline)
+    threshold = float(np.mean(baseline) + cfg.peak_sigma_mult * safe_std(baseline))
 
-    for i in range(search_start, search_end - min_motion_n):
-        local_dx = dx[i:i + min_motion_n]
-        signed_dx = direction * local_dx
+    def _scan_for_peak(window_start: int) -> BPResult | None:
+        for i in range(window_start + 1, search_end - 1):
+            value = float(abs_d2[i])
 
-        mean_motion = float(np.mean(signed_dx))
-        positive_count = int(np.sum(signed_dx > 0.0))
+            left = max(window_start, i - local_window_n)
+            right = min(search_end, i + local_window_n + 1)
+            local_slice = abs_d2[left:right]
 
-        motion_ok = mean_motion > slope_threshold
-        persistence_ok = positive_count >= max(1, int(0.8 * min_motion_n))
+            is_local_peak = value >= float(np.max(local_slice))
+            strong_enough = value > threshold
 
-        if motion_ok and persistence_ok:
-            confidence = float(
-                np.clip(mean_motion / (slope_threshold + 1e-8), 0.0, 1.0)
-            )
-            return BPResult(bp_index=i, confidence=confidence, reason="detected")
+            if is_local_peak and strong_enough:
+                confidence = float(np.clip(value / (threshold + 1e-8), 0.0, 1.0))
+                return BPResult(bp_index=i, confidence=confidence, reason="detected")
+        return None
+
+    if primary_start + local_window_n < search_end:
+        primary_result = _scan_for_peak(primary_start)
+        if primary_result is not None:
+            return primary_result
+
+    fallback_result = _scan_for_peak(fallback_start)
+    if fallback_result is not None:
+        return fallback_result
 
     return BPResult(bp_index=None, confidence=0.0, reason="no bp found")
     
