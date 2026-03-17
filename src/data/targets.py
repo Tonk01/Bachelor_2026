@@ -187,7 +187,10 @@ def detect_bp(
     search_end = min(int(round(x.size * cfg.search_end_ratio)), x.size)
 
     if search_end <= search_start + min_motion_n:
-        return BPResult(bp_index=None, confidence=0.0, reason="search window too short")
+        fallback_start = max(cfg.min_index, prp_index + 1)
+        if search_end <= fallback_start + min_motion_n:
+            return BPResult(bp_index=None, confidence=0.0, reason="search window too short")
+        search_start = fallback_start
 
     post_prp = dx[search_start:search_end]
     if post_prp.size == 0:

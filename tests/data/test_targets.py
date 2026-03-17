@@ -1,7 +1,15 @@
 import numpy as np
 import pytest
 
-from src.data.targets import ms_to_samples, moving_avg, safe_std, gaussian, build_prp_target, detect_prp
+from src.data.targets import (
+    build_prp_target,
+    detect_bp,
+    detect_prp,
+    gaussian,
+    moving_avg,
+    ms_to_samples,
+    safe_std,
+)
 
 
 def test_ms_to_sample():
@@ -78,3 +86,26 @@ def test_detect_prp_invalid_shape():
 
     with pytest.raises(ValueError):
         detect_prp(signal, 400)
+
+
+def test_detect_bp_simple_rise():
+    samplerate = 400
+    signal = np.zeros(400, dtype=np.float32)
+
+    signal[120:200] = np.linspace(0, 10, 80, dtype=np.float32)
+    result = detect_bp(signal, samplerate, prp_index=120)
+
+    assert result.bp_index is not None
+    assert result.bp_index >= 120
+
+
+def test_detect_bp_simple_fall():
+    samplerate = 400
+    signal = np.ones(400, dtype=np.float32) * 10
+
+    signal[120:200] = np.linspace(10, 0, 80, dtype=np.float32)
+    signal[200:] = 0
+    result = detect_bp(signal, samplerate, prp_index=120)
+
+    assert result.bp_index is not None
+    assert result.bp_index >= 120
