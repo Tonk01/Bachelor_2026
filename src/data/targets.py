@@ -19,6 +19,23 @@ class PRPResult:
     confidence: float
     reason: str
 
+
+@dataclass(frozen = True)
+class BPConfig:
+    smooth_ms: float = 10.0
+    search_start_offset_ms: float = 500.0
+    search_end_ratio: float = 0.60
+    min_motion_ms: float = 12.0
+    slope_sigma_mult: float = 2.0
+    min_index: int = 0
+
+
+@dataclass(frozen = True)
+class BPResult:
+    bp_index: int | None
+    confidence: float
+    reason: str
+
 def ms_to_samples(ms: float, samplerate: int, minimum: int = 1) -> int: 
     n = int(round((ms / 1000.0) * samplerate))
     return max(minimum, n)
@@ -132,6 +149,76 @@ def detect_prp(signal: np.ndarray, samplerate: int, config: PRPconfig | None = N
     print("best_pos_count      :", best_pos_count)
 
     return PRPResult(prp_index=None, confidence=0.0, reason="no prp found")
+
+
+def detect_bp(
+    signal: np.ndarray,
+    samplerate: int,
+    prp_index: int | None,
+    config: BPConfig | None = None,
+) -> BPResult:
+    cfg = config or BPConfig()
+
+    if signal.ndim != 1:
+        raise ValueError("Signal must be 1D")
+
+    if signal.size == 0:
+        return BPResult(bp_index=None, confidence=0.0, reason="empty signal")
+
+    if samplerate <= 0:
+        raise ValueError("samplerate must be above 0")
+
+    if prp_index is None:
+        return BPResult(bp_index=None, confidence=0.0, reason="missing prp")
+
+    x = np.asarray(signal, dtype=np.float32)
+
+    if not np.isfinite(x).all():
+        return BPResult(bp_index=None, confidence=0.0, reason="non-finite signal")
+
+    smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
+    offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
+    min_motion_n = ms_to_samples(cfg.min_motion_ms, samplerate)
+
+    x_smooth = moving_avg(x, smooth_n)
+    dx = np.diff(x_smooth, prepend=x_smooth[0])
+
+    search_start = max(cfg.min_index, prp_index + offset_n)
+    search_end = min(int(round(x.size * cfg.search_end_ratio)), x.size)
+
+    if search_end <= search_start + min_motion_n:
+        return BPResult(bp_index=None, confidence=0.0, reason="search window too short")
+
+    post_prp = dx[search_start:search_end]
+    if post_prp.size == 0:
+        return BPResult(bp_index=None, confidence=0.0, reason="no post-prp signal")
+
+    direction = 1.0 if float(np.mean(post_prp)) >= 0.0 else -1.0
+
+    baseline_start = max(0, prp_index - min_motion_n)
+    baseline = dx[baseline_start:prp_index]
+    if baseline.size == 0:
+        baseline = dx[:min_motion_n]
+
+    slope_threshold = cfg.slope_sigma_mult * safe_std(baseline)
+
+    for i in range(search_start, search_end - min_motion_n):
+        local_dx = dx[i:i + min_motion_n]
+        signed_dx = direction * local_dx
+
+        mean_motion = float(np.mean(signed_dx))
+        positive_count = int(np.sum(signed_dx > 0.0))
+
+        motion_ok = mean_motion > slope_threshold
+        persistence_ok = positive_count >= max(1, int(0.8 * min_motion_n))
+
+        if motion_ok and persistence_ok:
+            confidence = float(
+                np.clip(mean_motion / (slope_threshold + 1e-8), 0.0, 1.0)
+            )
+            return BPResult(bp_index=i, confidence=confidence, reason="detected")
+
+    return BPResult(bp_index=None, confidence=0.0, reason="no bp found")
     
     # Gaussian bump to get a soft location target (trying to start with a "general" location for PRP)
 def gaussian(n_samples: int, center: int, samplerate: int, sigma_ms: float) -> np.ndarray:
