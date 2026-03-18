@@ -57,7 +57,8 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, config: PRPconfig 
 def main() -> None:
     candidate_paths = [
         Path("/mnt/d/Bachelor_data/data/raw_1sensor/JSP1/events/JSP1_10005.json"),
-        Path("src/data/raw/raw1/JSDP/events/JSDP_493.json"),
+        Path("src/data/raw/raw1/JSDP/events/JSDP_493.json"), # open
+        Path("src/data/raw/raw1/AHA/events/AHA_16.json"), # close
     ]
 
     path = next((candidate for candidate in candidate_paths if candidate.exists()), None)
@@ -71,9 +72,9 @@ def main() -> None:
 
     cfg = PRPconfig(
         search_end_ratio=0.35,
-        slope_sigma_mult=2.0,
-        min_amplitude_sigma=1.5,
-        min_rise_ms=8.0,
+        slope_sigma_mult=1.5,
+        min_amplitude_sigma=1.0,
+        min_event_ms=8.0,
     )
 
     inspect_signal(signal, samplerate=event.samplerate, config=cfg)

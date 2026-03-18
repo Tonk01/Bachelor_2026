@@ -8,7 +8,7 @@ class PRPconfig:
     smooth_ms: float = 10.0
     baseline_ms: float = 80.0
     search_end_ratio: float = 0.35
-    min_rise_ms: float = 12.0
+    min_event_ms: float = 12.0
     slope_sigma_mult: float = 3.0 
     min_amplitude_sigma: float = 2.0
     min_index: int = 0
@@ -18,6 +18,7 @@ class PRPResult:
     prp_index: int | None
     confidence: float
     reason: str
+    direction: str | None = None        # rise or falling. (open or close)
 
 
 @dataclass(frozen = True)
@@ -58,7 +59,7 @@ def detect_prp(signal: np.ndarray, samplerate: int, config: PRPconfig | None = N
         raise ValueError("Signal must be 1D")
 
     if signal.size == 0:
-        return PRPResult(prp_index=None, confidence=0.0, reason="empty signal")
+        return PRPResult(prp_index=None, confidence=0.0, reason="empty signal", direction = None)
 
     if samplerate <= 0:
         raise ValueError("samplerate must be above 0")
@@ -66,11 +67,11 @@ def detect_prp(signal: np.ndarray, samplerate: int, config: PRPconfig | None = N
     x = np.asarray(signal, dtype=np.float32)
 
     if not np.isfinite(x).all():
-        return PRPResult(prp_index=None, confidence=0.0, reason="non-finite signal")
+        return PRPResult(prp_index=None, confidence=0.0, reason="non-finite signal", direction = None)
 
     smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
     baseline_n = ms_to_samples(cfg.baseline_ms, samplerate)
-    min_rise_n = ms_to_samples(cfg.min_rise_ms, samplerate)
+    min_event_n = ms_to_samples(cfg.min_event_ms, samplerate) 
 
     x_smooth = moving_avg(x, smooth_n)
     dx = np.diff(x_smooth, prepend=x_smooth[0])
@@ -78,8 +79,8 @@ def detect_prp(signal: np.ndarray, samplerate: int, config: PRPconfig | None = N
     search_end = max(cfg.min_index + 1, int(round(x.size * cfg.search_end_ratio)))
     search_end = min(search_end, x.size)
 
-    if search_end <= baseline_n + min_rise_n:
-        return PRPResult(prp_index=None, confidence=0.0, reason="signal too short for PRP")
+    if search_end <= baseline_n + min_event_n:
+        return PRPResult(prp_index=None, confidence=0.0, reason="signal too short for PRP", direction = None)
 
     baseline_x = x_smooth[:baseline_n]
     baseline_dx = dx[:baseline_n]
@@ -90,66 +91,74 @@ def detect_prp(signal: np.ndarray, samplerate: int, config: PRPconfig | None = N
     slope_mean = float(np.mean(baseline_dx))
     slope_std = safe_std(baseline_dx)
 
-    slope_threshold = slope_mean + cfg.slope_sigma_mult * slope_std
-    amplitude_threshold = baseline_mean + cfg.min_amplitude_sigma * baseline_std
+    pos_slope_threshold = slope_mean + cfg.slope_sigma_mult * slope_std
+    neg_slope_threshold = slope_mean - cfg.slope_sigma_mult * slope_std
+
+    upper_amplitude_threshold = baseline_mean + cfg.min_amplitude_sigma * baseline_std
+    lower_amplitude_threshold = baseline_mean - cfg.min_amplitude_sigma * baseline_std
 
     # debugg
-    print("baseline_mean       :", baseline_mean)
-    print("baseline_std        :", baseline_std)
-    print("slope_mean          :", slope_mean)
-    print("slope_std           :", slope_std)
-    print("slope_threshold     :", slope_threshold)
-    print("amplitude_threshold :", amplitude_threshold)
-    print("baseline_n          :", baseline_n)
-    print("min_rise_n          :", min_rise_n)
-    print("search_end          :", search_end)
+    print("baseline_mean           :", baseline_mean)
+    print("baseline_std            :", baseline_std)
+    print("slope_mean              :", slope_mean)
+    print("slope_std               :", slope_std)
+    print("pos_slope_threshold     :", pos_slope_threshold)
+    print("neg_slope_threshold     :", neg_slope_threshold)
+    print("upper_amp_threshold     :", upper_amplitude_threshold)
+    print("lower_amp_threshold     :", lower_amplitude_threshold)
+    print("baseline_n              :", baseline_n)
+    print("min_event_n              :", min_event_n)
+    print("search_end              :", search_end)
 
     start_idx = max(cfg.min_index, baseline_n)
 
-    best_i = None
-    best_mean_slope = -1e18
-    best_max_amp = -1e18
-    best_pos_count = -1
-
-    for i in range(start_idx, search_end - min_rise_n):
-        local_dx = dx[i:i + min_rise_n]
-        local_x = x_smooth[i:i + min_rise_n]
+    for i in range(start_idx, search_end - min_event_n + 1):
+        local_dx = dx[i:i + min_event_n]
+        local_x = x_smooth[i:i + min_event_n]
 
         mean_slope = float(np.mean(local_dx))
         max_amp = float(np.max(local_x))
+        min_amp = float(np.min(local_x))
+
         pos_count = int(np.sum(local_dx > 0.0))
+        neg_count = int(np.sum(local_dx < 0.0))
 
-        if mean_slope > best_mean_slope:
-            best_i = i
-            best_mean_slope = mean_slope
-            best_max_amp = max_amp
-            best_pos_count = pos_count
+        # opening sequence check
+        rise_slope_ok = mean_slope > pos_slope_threshold
+        rise_amplitude_ok = max_amp > upper_amplitude_threshold
+        rise_persistence_ok = pos_count >= max(1, int(0.8 * min_event_n))
 
-        slope_ok = mean_slope > slope_threshold
-        amplitude_ok = max_amp > amplitude_threshold
-        persistence_ok = pos_count >= max(1, int(0.8 * min_rise_n))
+        # closing sequence check
+        fall_slope_ok = mean_slope < neg_slope_threshold
+        fall_amplitude_ok = min_amp < lower_amplitude_threshold
+        fall_persistence_ok = neg_count >= max(1, int(0.5 * min_event_n))
 
-        if slope_ok and amplitude_ok and persistence_ok:
-            slope_score = mean_slope / (slope_threshold + 1e-8)
+        rise_valid = rise_slope_ok and rise_amplitude_ok and rise_persistence_ok
+        fall_valid = fall_slope_ok and fall_amplitude_ok and fall_persistence_ok
+
+        rise_score = 0.0
+        if rise_valid:
+            slope_score = mean_slope / (pos_slope_threshold + 1e-8)
             amp_score = (max_amp - baseline_mean) / baseline_std
-            confidence = float(np.clip(0.25 * slope_score + 0.1 * amp_score, 0.0, 1.0))
+            rise_score = 0.25 * slope_score + 0.1 * amp_score
 
-            #debugg
-            print("detected_i          :", i)
-            print("detected_mean_slope :", mean_slope)
-            print("detected_max_amp    :", max_amp)
-            print("detected_pos_count  :", pos_count)
+        fall_score = 0.0
+        if fall_valid:
+            slope_score = abs(mean_slope) / (abs(neg_slope_threshold) + 1e-8)
+            amp_score = (baseline_mean - min_amp) / baseline_std
+            fall_score = 0.25 * slope_score + 0.1 * amp_score
+    
+        if rise_valid:
+            confidence = float(np.clip(rise_score, 0.0, 1.0))
 
-            return PRPResult(prp_index=i, confidence=confidence, reason="detected")
+            return PRPResult(prp_index = i, confidence = confidence, reason = "detected", direction = "rise")
 
-    # debugg
-    print("best_i              :", best_i)
-    print("best_mean_slope     :", best_mean_slope)
-    print("best_max_amp        :", best_max_amp)
-    print("best_pos_count      :", best_pos_count)
+        if  fall_valid:
+            confidence = float(np.clip(fall_score, 0.0, 1.0))
 
-    return PRPResult(prp_index=None, confidence=0.0, reason="no prp found")
+            return PRPResult(prp_index = i, confidence = confidence, reason = "detected", direction = "fall")
 
+    return PRPResult(prp_index = None, confidence = 0.0, reason = "no prp found", direction = None)
 
 def detect_bp(
     signal: np.ndarray,
