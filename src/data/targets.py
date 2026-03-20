@@ -4,22 +4,64 @@ from dataclasses import dataclass
 import numpy as np
 
 @dataclass (frozen = True)
-class PRPconfig:
-    smooth_ms: float = 10.0
-    baseline_ms: float = 80.0
-    search_end_ratio: float = 0.35
-    min_event_ms: float = 12.0
-    slope_sigma_mult: float = 3.0 
-    min_amplitude_sigma: float = 2.0
-    min_index: int = 0
+class PRPConfig:
+    samplerate: int = 400
+    smooth_ms: float = 15.0
+    pre_window_ms: float = 40.0
+    post_window_ms: float = 40.0
+    noise_window_ms: float = 40.0
+    future_confirm_ms: float = 150.0
+
+    min_change_multiplier: float = 3.3  # 3.3
+    min_absolute_change: float = 8e-6   # 8e-6
+    min_future_net_change: float = 7e-6 # 7e-6 <-- update these if you find better. 
+
+    inner_region_ratio: float = 0.7
+
+
+    @property
+    def smooth_samples(self) -> int:
+        return max(3, int(round(self.smooth_ms * self.samplerate / 1000)))
+
+    @property
+    def pre_window_samples(self) -> int:
+        return max(1, int(round(self.pre_window_ms * self.samplerate / 1000)))
+
+    @property
+    def post_window_samples(self) -> int:
+        return max(1, int(round(self.post_window_ms * self.samplerate / 1000)))
+    
+    @property
+    def noise_window_samples(self) -> int:
+        return max(3, int(round(self.noise_window_ms * self.samplerate / 1000)))
+    
+    @property 
+    def future_confirm_samples(self) -> int:
+        return max(1, int(round(self.future_confirm_ms * self.samplerate / 1000)))
+
 
 @dataclass (frozen = True)
 class PRPResult:
+    start_index: int | None
+    end_index: int | None
     prp_index: int | None
     confidence: float
     reason: str
-    direction: str | None = None        # rise or falling. (open or close)
 
+@dataclass (frozen = True)
+class PRPRegion:
+    start_index: int
+    end_index: int
+    peak_strength: float
+    mean_strength: float
+
+    @property 
+    def width(self) -> int:
+        return self.end_index - self.start_index + 1
+
+    @property
+    def midpoint_index(self) -> int:
+        return (self.start_index + self.end_index) // 2
 
 @dataclass(frozen = True)
 class BPConfig:
@@ -29,7 +71,6 @@ class BPConfig:
     peak_sigma_mult: float = 3.0
     local_window_ms: float = 25.0
     min_index: int = 0
-
 
 @dataclass(frozen = True)
 class BPResult:
@@ -45,120 +86,274 @@ def moving_avg(x: np.ndarray, window: int) -> np.ndarray:
     if window <= 1:
         return x.copy()
     
+    padd_left = window // 2 
+    pad_right = window - 1 - padd_left
+    
+    padded = np.pad(x, (padd_left, pad_right), mode = "edge")
     kernel = np.ones(window, dtype = np.float32) / float(window)
-    return np.convolve(x, kernel, mode = "same").astype(np.float32)
+
+    return np.convolve(padded, kernel, mode = "valid").astype(np.float32)
 
 def safe_std(x: np.ndarray, eps: float = 1e-8) -> float:
     std = float(np.std(x))
     return max(std, eps)
 
-def detect_prp(signal: np.ndarray, samplerate: int, config: PRPconfig | None = None) -> PRPResult:
-    cfg = config or PRPconfig()
+def smooth_signal(signal: np.ndarray, config: PRPConfig) -> np.ndarray:
+    return moving_avg(signal.astype(np.float32), config.smooth_samples)
+
+def compute_local_std(signal: np.ndarray, window_samples: int, min_std: float = 1e-12) -> np.ndarray:
+    n = len(signal)
+    local_std = np.zeros(n, dtype=np.float32)
+    half = window_samples // 2
+
+    for i in range(n):
+        start = max(0, i - half)
+        stop = min(n, i + half + 1)
+        window = signal[start:stop]
+
+        if len(window) < 2:
+            local_std[i] = min_std
+        else: 
+            local_std[i] = max(float(np.std(window)), min_std)
+    
+    return local_std
+
+def compute_local_change(signal: np.ndarray, pre_window_samples: int, post_window_samples: int) -> np.ndarray:
+    n = len(signal)
+    local_change = np.zeros(n, dtype=np.float32)
+
+    for i in range(n):
+        pre_start = max(0, i - pre_window_samples)
+        pre_stop = i
+
+        post_start = i
+        post_stop = min(n, i + post_window_samples)
+
+        pre_window = signal[pre_start:pre_stop]
+        post_window = signal[post_start:post_stop]
+
+        if len(pre_window) == 0 or len(post_window) == 0:
+            local_change[i] = 0.0
+        else:
+            local_change[i] = float(np.mean(post_window) - np.mean(pre_window))
+
+    return local_change
+
+def compute_future_net_rise(signal: np.ndarray, future_samples: int,) -> np.ndarray:
+    n = len(signal)
+    out = np.zeros(n, dtype=np.float32)
+
+    for i in range(n):
+        stop = min(n, i + future_samples + 1)
+        future_window = signal[i:stop]
+
+        if len(future_window) == 0:
+            out[i] = 0.0
+        else:
+            out[i] = float(np.max(future_window) - signal[i])
+
+    return out
+
+def compute_future_net_drop(signal: np.ndarray, future_samples: int,) -> np.ndarray:
+    n = len(signal)
+    out = np.zeros(n, dtype=np.float32)
+
+    for i in range(n):
+        stop = min(n, i + future_samples + 1)
+        future_window = signal[i:stop]
+
+        if len(future_window) == 0:
+            out[i] = 0.0
+        else:
+            out[i] = float(signal[i] - np.min(future_window))
+
+    return out
+    
+
+def compute_change_strength(local_change: np.ndarray, local_std: np.ndarray, min_std: float = 1e-12) -> np.ndarray:
+    safe_std = np.maximum(local_std, min_std)
+    return np.abs(local_change) / safe_std
+
+def compute_change_candidates(
+        local_change: np.ndarray, 
+        change_strength: np.ndarray,
+        future_net_rise: np.ndarray,
+        future_net_drop: np.ndarray,
+        min_change_multiplier: float,
+        min_absolute_change: float,
+        min_future_net_change: float,
+) -> np.ndarray:
+    
+    is_rise = local_change > 0
+    is_drop = local_change < 0
+
+    future_confirm = np.where(is_rise, future_net_rise, future_net_drop)
+
+    return(change_strength >= min_change_multiplier) & (np.abs(local_change) >= min_absolute_change) & (future_confirm >= min_future_net_change)
+
+def build_regions_with_stats(mask: np.ndarray, strength_signal: np.ndarray) -> list [PRPRegion]:
+    regions: list[PRPRegion] = []
+    start: int | None = None
+
+    for i, is_candidate in enumerate(mask):
+        if is_candidate and start is None:
+            start = i
+
+        elif not is_candidate and start is not None:
+            end = i - 1
+
+            region_strength = strength_signal[start:end + 1]
+            regions.append(
+                PRPRegion(
+                start_index = start, 
+                end_index = end, 
+                peak_strength = float(np.max(region_strength)), 
+                mean_strength = float(np.mean(region_strength)),
+                )
+            )
+            start = None
+
+    if start is not None:
+        end = len(mask) - 1 
+        region_strength = strength_signal[start:end + 1]
+        regions.append(
+            PRPRegion(
+                start_index=start,
+                end_index=end,
+                peak_strength=float(np.max(region_strength)),
+                mean_strength=float(np.mean(region_strength)),
+            )
+        )
+
+    return regions
+
+def select_earliest_strong_region(regions: list[PRPRegion], config: PRPConfig,) -> PRPRegion | None: 
+    
+    for region in regions:
+        if region.peak_strength >= config.min_change_multiplier:
+            return region
+    return None
+
+def tighten_region(region: PRPRegion, strength_signal: np.ndarray, inner_region_ratio: float) -> PRPRegion:
+    region_strength = strength_signal[region.start_index:region.end_index + 1]
+    inner_threshold = inner_region_ratio * region.peak_strength
+
+    keep_indices = np.where(region_strength >= inner_threshold)[0]
+
+    if len(keep_indices) == 0:
+        return region
+    
+    new_start = region.start_index + int(keep_indices[0])
+    new_end = region.start_index + int(keep_indices[-1])
+    new_strength = strength_signal[new_start:new_end + 1]
+
+    return PRPRegion(
+        start_index=new_start,
+        end_index=new_end,
+        peak_strength=float(np.max(new_strength)),
+        mean_strength=float(np.mean(new_strength)),
+    )
+
+def build_prp_result(selected_regions: PRPRegion | None) -> PRPResult:
+    if selected_regions is None:
+        return PRPResult(
+            start_index=None,
+            end_index=None,
+            prp_index=None,
+            confidence=None,
+            reason="No candidate region passed the minimum peak strength"
+        )
+    
+    return PRPResult(
+        start_index=selected_regions.start_index,
+        end_index=selected_regions.end_index,
+        prp_index=selected_regions.midpoint_index,
+        confidence=selected_regions.peak_strength,
+        reason=" Select midpoint of earliest strong candidate region"
+    )
+
+def detect_prp(signal: np.ndarray, config: PRPConfig) -> PRPResult:
+    signal = np.asarray(signal, dtype=np.float32)
 
     if signal.ndim != 1:
-        raise ValueError("Signal must be 1D")
-
-    if signal.size == 0:
-        return PRPResult(prp_index=None, confidence=0.0, reason="empty signal", direction = None)
-
-    if samplerate <= 0:
-        raise ValueError("samplerate must be above 0")
-
-    x = np.asarray(signal, dtype=np.float32)
-
-    if not np.isfinite(x).all():
-        return PRPResult(prp_index=None, confidence=0.0, reason="non-finite signal", direction = None)
-
-    smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
-    baseline_n = ms_to_samples(cfg.baseline_ms, samplerate)
-    min_event_n = ms_to_samples(cfg.min_event_ms, samplerate) 
-
-    x_smooth = moving_avg(x, smooth_n)
-    dx = np.diff(x_smooth, prepend=x_smooth[0])
-
-    search_end = max(cfg.min_index + 1, int(round(x.size * cfg.search_end_ratio)))
-    search_end = min(search_end, x.size)
-
-    if search_end <= baseline_n + min_event_n:
-        return PRPResult(prp_index=None, confidence=0.0, reason="signal too short for PRP", direction = None)
-
-    baseline_x = x_smooth[:baseline_n]
-    baseline_dx = dx[:baseline_n]
-
-    baseline_mean = float(np.mean(baseline_x))
-    baseline_std = safe_std(baseline_x)
-
-    slope_mean = float(np.mean(baseline_dx))
-    slope_std = safe_std(baseline_dx)
-
-    pos_slope_threshold = slope_mean + cfg.slope_sigma_mult * slope_std
-    neg_slope_threshold = slope_mean - cfg.slope_sigma_mult * slope_std
-
-    upper_amplitude_threshold = baseline_mean + cfg.min_amplitude_sigma * baseline_std
-    lower_amplitude_threshold = baseline_mean - cfg.min_amplitude_sigma * baseline_std
-
-    # debugg
-    print("baseline_mean           :", baseline_mean)
-    print("baseline_std            :", baseline_std)
-    print("slope_mean              :", slope_mean)
-    print("slope_std               :", slope_std)
-    print("pos_slope_threshold     :", pos_slope_threshold)
-    print("neg_slope_threshold     :", neg_slope_threshold)
-    print("upper_amp_threshold     :", upper_amplitude_threshold)
-    print("lower_amp_threshold     :", lower_amplitude_threshold)
-    print("baseline_n              :", baseline_n)
-    print("min_event_n              :", min_event_n)
-    print("search_end              :", search_end)
-
-    start_idx = max(cfg.min_index, baseline_n)
-
-    for i in range(start_idx, search_end - min_event_n + 1):
-        local_dx = dx[i:i + min_event_n]
-        local_x = x_smooth[i:i + min_event_n]
-
-        mean_slope = float(np.mean(local_dx))
-        max_amp = float(np.max(local_x))
-        min_amp = float(np.min(local_x))
-
-        pos_count = int(np.sum(local_dx > 0.0))
-        neg_count = int(np.sum(local_dx < 0.0))
-
-        # opening sequence check
-        rise_slope_ok = mean_slope > pos_slope_threshold
-        rise_amplitude_ok = max_amp > upper_amplitude_threshold
-        rise_persistence_ok = pos_count >= max(1, int(0.8 * min_event_n))
-
-        # closing sequence check
-        fall_slope_ok = mean_slope < neg_slope_threshold
-        fall_amplitude_ok = min_amp < lower_amplitude_threshold
-        fall_persistence_ok = neg_count >= max(1, int(0.5 * min_event_n))
-
-        rise_valid = rise_slope_ok and rise_amplitude_ok and rise_persistence_ok
-        fall_valid = fall_slope_ok and fall_amplitude_ok and fall_persistence_ok
-
-        rise_score = 0.0
-        if rise_valid:
-            slope_score = mean_slope / (pos_slope_threshold + 1e-8)
-            amp_score = (max_amp - baseline_mean) / baseline_std
-            rise_score = 0.25 * slope_score + 0.1 * amp_score
-
-        fall_score = 0.0
-        if fall_valid:
-            slope_score = abs(mean_slope) / (abs(neg_slope_threshold) + 1e-8)
-            amp_score = (baseline_mean - min_amp) / baseline_std
-            fall_score = 0.25 * slope_score + 0.1 * amp_score
+        raise ValueError("detect prp excepts 1D signal")
     
-        if rise_valid:
-            confidence = float(np.clip(rise_score, 0.0, 1.0))
+    if len(signal) == 0:
+        raise ValueError("detect prp expects a non empty signal")
 
-            return PRPResult(prp_index = i, confidence = confidence, reason = "detected", direction = "rise")
 
-        if  fall_valid:
-            confidence = float(np.clip(fall_score, 0.0, 1.0))
+    smoothed = smooth_signal(signal, config)
 
-            return PRPResult(prp_index = i, confidence = confidence, reason = "detected", direction = "fall")
+    local_std = compute_local_std(
+        smoothed, 
+        config.noise_window_samples
+    )
 
-    return PRPResult(prp_index = None, confidence = 0.0, reason = "no prp found", direction = None)
+    local_change = compute_local_change(
+        smoothed, 
+        config.pre_window_samples, 
+        config.post_window_samples
+    )
+    
+    change_strength = compute_change_strength(
+        local_change=local_change,
+        local_std = local_std,
+    )
+    
+    future_net_rise = compute_future_net_rise(
+        smoothed,
+        config.future_confirm_samples,
+    )
+
+    future_net_drop = compute_future_net_drop(
+        smoothed,
+        config.future_confirm_samples
+    )
+
+    candidate_mask = compute_change_candidates(
+        change_strength=change_strength,
+        local_change=local_change,
+        future_net_drop=future_net_drop,
+        future_net_rise=future_net_rise,
+        min_change_multiplier=config.min_change_multiplier,
+        min_absolute_change=config.min_absolute_change,
+        min_future_net_change=config.min_future_net_change
+    )
+
+    regions = build_regions_with_stats(
+        mask=candidate_mask,
+        strength_signal=change_strength,
+    )
+
+    selected_region = select_earliest_strong_region(
+        regions=regions,
+        config=config,
+    )
+
+    if selected_region is not None:
+        selected_region = tighten_region(
+            region=selected_region,
+            strength_signal=change_strength,
+            inner_region_ratio=config.inner_region_ratio,
+        )
+    
+    return build_prp_result(selected_region)
+
+
+def strength_signal(future_drop: np.ndarray, local_std: np.ndarray, min_std: float = 1e-12) -> np.ndarray:
+    safe_std = np.maximum(local_std, min_std)
+    return future_drop / safe_std
+    
+# boolean array catching real drops, possible PRP's
+def compute_drop_candidates(
+        strength_signal: np.ndarray, 
+        future_drop: np.ndarray,  
+        min_drop_multiplier: float, 
+        min_absolute_drop: float,
+        ) -> np.ndarray:
+    
+    return (
+        (strength_signal >= min_drop_multiplier) & (future_drop >= min_absolute_drop))
 
 def detect_bp(
     signal: np.ndarray,
@@ -256,7 +451,6 @@ def build_prp_target(
     samplerate: int,
     sigma_ms: float = 10.0 
 ) -> np.ndarray:
-    
     if prp_index is None:
         return np.zeros(n_samples, dtype = np.float32)
     
