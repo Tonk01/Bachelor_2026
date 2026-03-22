@@ -78,6 +78,25 @@ class BPResult:
     confidence: float
     reason: str
 
+
+@dataclass(frozen = True)
+class SPConfig:
+    smooth_ms: float = 10.0
+    settle_threshold_ratio: float = 0.2
+    significant_motion_ratio: float = 0.35
+    settle_window_ms: float = 200.0
+    min_peak_motion: float = 1e-6
+    peak_motion_percentile: float = 99.9
+    final_plateau_ms: float = 1000.0
+    final_level_tolerance_ratio: float = 0.14
+
+
+@dataclass(frozen = True)
+class SPResult:
+    sp_index: int | None
+    confidence: float
+    reason: str
+
 def ms_to_samples(ms: float, samplerate: int, minimum: int = 1) -> int: 
     n = int(round((ms / 1000.0) * samplerate))
     return max(minimum, n)
@@ -355,6 +374,29 @@ def compute_drop_candidates(
     return (
         (strength_signal >= min_drop_multiplier) & (future_drop >= min_absolute_drop))
 
+
+def find_active_window(
+    signal: np.ndarray,
+    samplerate: int,
+    smooth_n: int,
+    active_window_ms: float,
+) -> tuple[int, int]:
+    x_smooth = moving_avg(signal, smooth_n)
+    d1 = np.gradient(x_smooth)
+    activity = np.abs(d1)
+
+    edge_guard = max(5, smooth_n * 2)
+    if activity.size > 2 * edge_guard:
+        trimmed_activity = activity[edge_guard:-edge_guard]
+        peak = int(np.argmax(trimmed_activity)) + edge_guard
+    else:
+        peak = int(np.argmax(activity))
+
+    pad = ms_to_samples(active_window_ms, samplerate)
+    start = max(0, peak - pad)
+    end = min(signal.size, peak + pad)
+    return start, end
+
 def detect_bp(
     signal: np.ndarray,
     samplerate: int,
@@ -429,6 +471,87 @@ def detect_bp(
         return fallback_result
 
     return BPResult(bp_index=None, confidence=0.0, reason="no bp found")
+
+
+def detect_sp(
+    signal: np.ndarray,
+    samplerate: int,
+    config: SPConfig | None = None,
+) -> SPResult:
+    cfg = config or SPConfig()
+
+    if signal.ndim != 1:
+        raise ValueError("Signal must be 1D")
+
+    if signal.size == 0:
+        return SPResult(sp_index=None, confidence=0.0, reason="empty signal")
+
+    if samplerate <= 0:
+        raise ValueError("samplerate must be above 0")
+
+    x = np.asarray(signal, dtype=np.float32)
+
+    if not np.isfinite(x).all():
+        return SPResult(sp_index=None, confidence=0.0, reason="non-finite signal")
+
+    smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
+    settle_window_n = ms_to_samples(cfg.settle_window_ms, samplerate)
+    final_plateau_n = ms_to_samples(cfg.final_plateau_ms, samplerate)
+
+    x_smooth = moving_avg(x, smooth_n)
+    motion = np.abs(np.gradient(x_smooth))
+    edge_guard = max(5, smooth_n * 2)
+
+    if motion.size > 2 * edge_guard:
+        trimmed_motion = motion[edge_guard: signal.size - edge_guard]
+    else:
+        trimmed_motion = motion
+
+    peak_motion = float(np.percentile(trimmed_motion, cfg.peak_motion_percentile))
+    if peak_motion < cfg.min_peak_motion:
+        return SPResult(sp_index=None, confidence=0.0, reason="no significant motion")
+
+    plateau_n = min(final_plateau_n, max(settle_window_n, signal.size // 5))
+    plateau_start = max(edge_guard, signal.size - plateau_n)
+    plateau = x_smooth[plateau_start: signal.size - edge_guard] if signal.size - edge_guard > plateau_start else x_smooth[plateau_start:]
+    if plateau.size == 0:
+        plateau = x_smooth[max(0, signal.size - final_plateau_n):]
+    if plateau.size == 0:
+        return SPResult(sp_index=None, confidence=0.0, reason="no final plateau window")
+
+    final_level = float(np.mean(plateau))
+    signal_range = float(np.max(x_smooth) - np.min(x_smooth))
+    plateau_std = safe_std(plateau)
+    level_tolerance = max(
+        3.0 * plateau_std,
+        cfg.final_level_tolerance_ratio * signal_range,
+    )
+    settle_threshold = cfg.settle_threshold_ratio * peak_motion
+
+    search_end = max(edge_guard + 1, plateau_start)
+    for i in range(search_end - 1, edge_guard, -1):
+        local_motion = motion[i:min(signal.size, i + settle_window_n)]
+        if local_motion.size == 0:
+            continue
+
+        distance_from_final = abs(float(x_smooth[i]) - final_level)
+        max_motion = float(np.max(local_motion))
+
+        if distance_from_final > level_tolerance or max_motion > settle_threshold:
+            sp_index = min(i + 1, signal.size - 1)
+            confidence = float(
+                np.clip(
+                    max(
+                        distance_from_final / (level_tolerance + 1e-8),
+                        max_motion / (settle_threshold + 1e-8),
+                    ) - 1.0,
+                    0.0,
+                    1.0,
+                )
+            )
+            return SPResult(sp_index=sp_index, confidence=confidence, reason="detected")
+
+    return SPResult(sp_index=None, confidence=0.0, reason="no sp found")
     
     # Gaussian bump to get a soft location target (trying to start with a "general" location for PRP)
 def gaussian(n_samples: int, center: int, samplerate: int, sigma_ms: float) -> np.ndarray:

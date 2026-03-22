@@ -4,6 +4,7 @@ import pytest
 from src.data.targets import (
     detect_bp,
     detect_prp,
+    detect_sp,
     moving_avg,
     ms_to_samples,
     safe_std,
@@ -136,3 +137,27 @@ def test_detect_bp_simple_fall():
 
     assert result.bp_index is not None
     assert result.bp_index >= 120
+
+
+def test_detect_sp_simple_rise():
+    samplerate = 400
+    signal = np.zeros(400, dtype=np.float32)
+
+    signal[120:200] = np.linspace(0, 10, 80, dtype=np.float32)
+    signal[200:] = 10
+    result = detect_sp(signal, samplerate)
+
+    assert result.sp_index is not None
+    assert result.sp_index >= 180
+
+
+def test_detect_sp_simple_fall():
+    samplerate = 400
+    signal = np.ones(400, dtype=np.float32) * 10
+
+    signal[120:200] = np.linspace(10, 0, 80, dtype=np.float32)
+    signal[200:] = 0
+    result = detect_sp(signal, samplerate)
+
+    assert result.sp_index is not None
+    assert result.sp_index >= 180
