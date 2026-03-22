@@ -52,7 +52,7 @@ def inspect_signal(signal: np.ndarray, config: PRPConfig | None = None) -> None:
 
 def main() -> None:
     candidate_paths = [
-        Path("/mnt/d/Bachelor_data/data/raw_1sensor/JSP1/events/JSP1_10005.json"),
+        Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
         #Path("src/data/raw/raw1/JSDP/events/JSDP_493.json"),
         Path("src/data/raw/raw1/AHA/events/AHA_17174.json"),
     ]

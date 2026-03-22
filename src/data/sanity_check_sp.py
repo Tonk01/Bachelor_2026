@@ -98,7 +98,7 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "SP i
 
 def main() -> None:
     candidate_paths = [
-        Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_1003.json"),
+        Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
         Path("src/data/raw/raw1/JSDP/events/JSDP_493.json"),
     ]
 

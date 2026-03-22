@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 
 from src.data.data_loader import load_event
-from src.data.targets import BPConfig, PRPconfig, detect_bp, detect_prp, moving_avg, ms_to_samples
+from src.data.targets import BPConfig, PRPConfig, detect_bp, detect_prp, moving_avg, ms_to_samples
 
 
 def _interesting_window(
@@ -33,15 +33,18 @@ def _interesting_window(
 
 
 def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "BP inspection") -> None:
-    prp_cfg = PRPconfig(
-        search_end_ratio=0.35,
-        slope_sigma_mult=0.9,
-        min_amplitude_sigma=1.0,
-        min_rise_ms=8.0,
+    prp_cfg = PRPConfig(
+        samplerate=samplerate,
+        smooth_ms=15.0,
+        pre_window_ms=40.0,
+        post_window_ms=40.0,
+        noise_window_ms=40.0,
+        future_confirm_ms=150.0,
+        inner_region_ratio=0.7,
     )
     bp_cfg = BPConfig()
 
-    prp_result = detect_prp(signal, samplerate=samplerate, config=prp_cfg)
+    prp_result = detect_prp(signal, prp_cfg)
     bp_result = detect_bp(
         signal,
         samplerate=samplerate,
@@ -49,7 +52,7 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "BP i
         config=bp_cfg,
     )
 
-    smooth_n = ms_to_samples(prp_cfg.smooth_ms, samplerate)
+    smooth_n = prp_cfg.smooth_samples
     x_smooth = moving_avg(signal.astype(np.float32), smooth_n)
     time_axis = np.arange(signal.size, dtype=np.float32) / float(samplerate)
     zoom_start, zoom_end = _interesting_window(
@@ -61,6 +64,8 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "BP i
     )
 
     print("PRP Result")
+    print(f" start_index {prp_result.start_index}")
+    print(f" end_index   {prp_result.end_index}")
     print(f" prp_index  {prp_result.prp_index}")
     print(f" confidence {prp_result.confidence:.4f}")
     print(f" reason {prp_result.reason}")
@@ -117,8 +122,7 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "BP i
 
 def main() -> None:
     candidate_paths = [
-        
-        Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_1001.json"),
+        Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
         Path("src/data/raw/raw1/JSDP/events/JSDP_493.json"),
     ]
 

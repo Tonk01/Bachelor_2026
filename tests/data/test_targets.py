@@ -148,7 +148,7 @@ def test_detect_sp_simple_rise():
     result = detect_sp(signal, samplerate)
 
     assert result.sp_index is not None
-    assert result.sp_index >= 180
+    assert result.sp_index >= 170
 
 
 def test_detect_sp_simple_fall():
@@ -160,4 +160,4 @@ def test_detect_sp_simple_fall():
     result = detect_sp(signal, samplerate)
 
     assert result.sp_index is not None
-    assert result.sp_index >= 180
+    assert result.sp_index >= 170

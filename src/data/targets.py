@@ -82,13 +82,10 @@ class BPResult:
 @dataclass(frozen = True)
 class SPConfig:
     smooth_ms: float = 10.0
-    settle_threshold_ratio: float = 0.2
-    significant_motion_ratio: float = 0.35
-    settle_window_ms: float = 200.0
+    significant_motion_ratio: float = 0.25
+    settle_threshold_ratio: float = 0.12
     min_peak_motion: float = 1e-6
-    peak_motion_percentile: float = 99.9
-    final_plateau_ms: float = 1000.0
-    final_level_tolerance_ratio: float = 0.14
+    final_plateau_window_ms: float = 800.0
 
 
 @dataclass(frozen = True)
@@ -252,6 +249,7 @@ def select_earliest_strong_region(regions: list[PRPRegion], config: PRPConfig,) 
         if region.peak_strength >= config.min_change_multiplier:
             return region
     return None
+
 
 def tighten_region(region: PRPRegion, strength_signal: np.ndarray, inner_region_ratio: float) -> PRPRegion:
     region_strength = strength_signal[region.start_index:region.end_index + 1]
@@ -495,11 +493,14 @@ def detect_sp(
         return SPResult(sp_index=None, confidence=0.0, reason="non-finite signal")
 
     smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
-    settle_window_n = ms_to_samples(cfg.settle_window_ms, samplerate)
-    final_plateau_n = ms_to_samples(cfg.final_plateau_ms, samplerate)
+    plateau_window_n = min(
+        ms_to_samples(cfg.final_plateau_window_ms, samplerate),
+        max(20, signal.size // 4),
+    )
 
     x_smooth = moving_avg(x, smooth_n)
     motion = np.abs(np.gradient(x_smooth))
+    abs_d2 = np.abs(np.gradient(np.gradient(x_smooth)))
     edge_guard = max(5, smooth_n * 2)
 
     if motion.size > 2 * edge_guard:
@@ -507,51 +508,53 @@ def detect_sp(
     else:
         trimmed_motion = motion
 
-    peak_motion = float(np.percentile(trimmed_motion, cfg.peak_motion_percentile))
+    peak_motion = float(np.max(trimmed_motion))
     if peak_motion < cfg.min_peak_motion:
         return SPResult(sp_index=None, confidence=0.0, reason="no significant motion")
 
-    plateau_n = min(final_plateau_n, max(settle_window_n, signal.size // 5))
-    plateau_start = max(edge_guard, signal.size - plateau_n)
-    plateau = x_smooth[plateau_start: signal.size - edge_guard] if signal.size - edge_guard > plateau_start else x_smooth[plateau_start:]
-    if plateau.size == 0:
-        plateau = x_smooth[max(0, signal.size - final_plateau_n):]
-    if plateau.size == 0:
-        return SPResult(sp_index=None, confidence=0.0, reason="no final plateau window")
-
-    final_level = float(np.mean(plateau))
-    signal_range = float(np.max(x_smooth) - np.min(x_smooth))
-    plateau_std = safe_std(plateau)
-    level_tolerance = max(
-        3.0 * plateau_std,
-        cfg.final_level_tolerance_ratio * signal_range,
-    )
+    significant_threshold = cfg.significant_motion_ratio * peak_motion
     settle_threshold = cfg.settle_threshold_ratio * peak_motion
 
-    search_end = max(edge_guard + 1, plateau_start)
-    for i in range(search_end - 1, edge_guard, -1):
-        local_motion = motion[i:min(signal.size, i + settle_window_n)]
-        if local_motion.size == 0:
+    plateau_start: int | None = None
+    last_search_start = max(edge_guard, signal.size - plateau_window_n - edge_guard)
+    for i in range(last_search_start, edge_guard - 1, -1):
+        window_motion = motion[i:i + plateau_window_n]
+        if window_motion.size < plateau_window_n:
             continue
+        if float(np.max(window_motion)) <= settle_threshold:
+            plateau_start = i
+        elif plateau_start is not None:
+            break
 
-        distance_from_final = abs(float(x_smooth[i]) - final_level)
-        max_motion = float(np.max(local_motion))
+    if plateau_start is None:
+        return SPResult(sp_index=None, confidence=0.0, reason="no final plateau found")
 
-        if distance_from_final > level_tolerance or max_motion > settle_threshold:
-            sp_index = min(i + 1, signal.size - 1)
-            confidence = float(
-                np.clip(
-                    max(
-                        distance_from_final / (level_tolerance + 1e-8),
-                        max_motion / (settle_threshold + 1e-8),
-                    ) - 1.0,
-                    0.0,
-                    1.0,
-                )
-            )
-            return SPResult(sp_index=sp_index, confidence=confidence, reason="detected")
+    search_start = edge_guard
+    search_end = plateau_start
+    if search_end <= search_start + 3:
+        return SPResult(sp_index=None, confidence=0.0, reason="no pre-plateau region")
 
-    return SPResult(sp_index=None, confidence=0.0, reason="no sp found")
+    kink_window = abs_d2[search_start:search_end]
+    if kink_window.size == 0:
+        return SPResult(sp_index=None, confidence=0.0, reason="empty sp search window")
+
+    kink_threshold = max(
+        0.25 * float(np.max(kink_window)),
+        float(np.mean(kink_window) + np.std(kink_window)),
+    )
+    last_peak_index: int | None = None
+
+    for i in range(search_start + 1, search_end - 1):
+        value = float(abs_d2[i])
+        is_local_peak = value >= float(abs_d2[i - 1]) and value >= float(abs_d2[i + 1])
+        if is_local_peak and value >= kink_threshold:
+            last_peak_index = i
+
+    if last_peak_index is None:
+        return SPResult(sp_index=None, confidence=0.0, reason="no strong sp kink before plateau")
+
+    confidence = float(np.clip(abs_d2[last_peak_index] / (np.max(kink_window) + 1e-8), 0.0, 1.0))
+    return SPResult(sp_index=last_peak_index, confidence=confidence, reason="detected")
     
     # Gaussian bump to get a soft location target (trying to start with a "general" location for PRP)
 def gaussian(n_samples: int, center: int, samplerate: int, sigma_ms: float) -> np.ndarray:
