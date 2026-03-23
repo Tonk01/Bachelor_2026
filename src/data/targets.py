@@ -474,7 +474,9 @@ def detect_bp(
 def detect_sp(
     signal: np.ndarray,
     samplerate: int,
+    prp_index: int | None,
     config: SPConfig | None = None,
+    
 ) -> SPResult:
     cfg = config or SPConfig()
 
@@ -486,6 +488,9 @@ def detect_sp(
 
     if samplerate <= 0:
         raise ValueError("samplerate must be above 0")
+    
+    if prp_index is None:
+        return BPResult(bp_index=None, confidence=0.0, reason="missing prp")
 
     x = np.asarray(signal, dtype=np.float32)
 
@@ -579,10 +584,42 @@ def build_prp_target(
 ) -> np.ndarray:
     if prp_index is None:
         return np.zeros(n_samples, dtype = np.float32)
-    
+
     return gaussian(
         n_samples = n_samples,
         center = prp_index, 
+        samplerate = samplerate,
+        sigma_ms = sigma_ms
+    )
+
+def build_bp_target(
+    n_samples: int,
+    bp_index: int | None,
+    samplerate: int,
+    sigma_ms: float = 10.0 
+) -> np.ndarray:
+    if bp_index is None:
+        return np.zeros(n_samples, dtype = np.float32)
+
+    return gaussian(
+        n_samples = n_samples,
+        center = bp_index, 
+        samplerate = samplerate,
+        sigma_ms = sigma_ms
+    )
+
+def build_sp_target(
+    n_samples: int,
+    sp_index: int | None,
+    samplerate: int,
+    sigma_ms: float = 10.0 
+) -> np.ndarray:
+    if sp_index is None:
+        return np.zeros(n_samples, dtype = np.float32)
+
+    return gaussian(
+        n_samples = n_samples,
+        center = sp_index, 
         samplerate = samplerate,
         sigma_ms = sigma_ms
     )
