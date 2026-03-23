@@ -71,6 +71,8 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "BP i
     print(f" reason {prp_result.reason}")
     print()
     print("BP Result")
+    print(f" start_index {bp_result.start_index}")
+    print(f" end_index   {bp_result.end_index}")
     print(f" bp_index   {bp_result.bp_index}")
     print(f" confidence {bp_result.confidence:.4f}")
     print(f" reason {bp_result.reason}")
@@ -103,6 +105,20 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "BP i
             linewidth=2.0,
             label="smooth pressure",
         )
+
+        if bp_result.start_index is not None and bp_result.end_index is not None:
+            ax.axvline(
+                bp_result.start_index / float(samplerate),
+                color="tab:red",
+                alpha=0.25,
+                label=f"BP start {bp_result.start_index}",
+            )
+            ax.axvline(
+                bp_result.end_index / float(samplerate),
+                color="tab:red",
+                alpha=0.25,
+                label=f"BP end {bp_result.end_index}",
+            )
 
         for index, color, label in marker_specs:
             if index is None:

@@ -5,7 +5,15 @@ import numpy as np
 from pathlib import Path
 
 from src.data.data_loader import load_event
-from src.data.targets import SPConfig, detect_sp, find_active_window, moving_avg, ms_to_samples
+from src.data.targets import (
+    PRPConfig,
+    SPConfig,
+    detect_prp,
+    detect_sp,
+    find_active_window,
+    moving_avg,
+    ms_to_samples,
+)
 
 
 def _interesting_window(
@@ -33,10 +41,25 @@ def _interesting_window(
 
 
 def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "SP inspection") -> None:
+    prp_cfg = PRPConfig(
+        samplerate=samplerate,
+        smooth_ms=15.0,
+        pre_window_ms=40.0,
+        post_window_ms=40.0,
+        noise_window_ms=40.0,
+        future_confirm_ms=150.0,
+        inner_region_ratio=0.7,
+    )
     sp_cfg = SPConfig()
-    sp_result = detect_sp(signal, samplerate=samplerate, config=sp_cfg)
+    prp_result = detect_prp(signal, prp_cfg)
+    sp_result = detect_sp(
+        signal,
+        samplerate=samplerate,
+        prp_index=prp_result.prp_index,
+        config=sp_cfg,
+    )
 
-    smooth_n = ms_to_samples(sp_cfg.smooth_ms, samplerate)
+    smooth_n = prp_cfg.smooth_samples
     x_smooth = moving_avg(signal.astype(np.float32), smooth_n)
     time_axis = np.arange(signal.size, dtype=np.float32) / float(samplerate)
     zoom_start, zoom_end = _interesting_window(
@@ -47,7 +70,16 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "SP i
         smooth_n,
     )
 
+    print("PRP Result")
+    print(f" start_index {prp_result.start_index}")
+    print(f" end_index   {prp_result.end_index}")
+    print(f" prp_index   {prp_result.prp_index}")
+    print(f" confidence  {prp_result.confidence:.4f}")
+    print(f" reason {prp_result.reason}")
+    print()
     print("SP Result")
+    print(f" start_index {sp_result.start_index}")
+    print(f" end_index   {sp_result.end_index}")
     print(f" sp_index   {sp_result.sp_index}")
     print(f" confidence {sp_result.confidence:.4f}")
     print(f" reason {sp_result.reason}")
@@ -83,6 +115,20 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "SP i
                 linestyle="--",
                 color="tab:green",
                 label=f"SP {sp_result.sp_index}",
+            )
+
+        if sp_result.start_index is not None and sp_result.end_index is not None:
+            ax.axvline(
+                sp_result.start_index / float(samplerate),
+                color="tab:green",
+                alpha=0.25,
+                label=f"SP start {sp_result.start_index}",
+            )
+            ax.axvline(
+                sp_result.end_index / float(samplerate),
+                color="tab:green",
+                alpha=0.25,
+                label=f"SP end {sp_result.end_index}",
             )
 
         ax.set_ylabel("pressure")

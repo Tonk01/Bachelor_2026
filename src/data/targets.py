@@ -74,6 +74,8 @@ class BPConfig:
 
 @dataclass(frozen = True)
 class BPResult:
+    start_index: int | None
+    end_index: int | None
     bp_index: int | None
     confidence: float
     reason: str
@@ -90,6 +92,8 @@ class SPConfig:
 
 @dataclass(frozen = True)
 class SPResult:
+    start_index: int | None
+    end_index: int | None
     sp_index: int | None
     confidence: float
     reason: str
@@ -113,6 +117,19 @@ def moving_avg(x: np.ndarray, window: int) -> np.ndarray:
 def safe_std(x: np.ndarray, eps: float = 1e-8) -> float:
     std = float(np.std(x))
     return max(std, eps)
+
+
+def expand_region_around_index(mask: np.ndarray, center: int) -> tuple[int, int]:
+    start = center
+    end = center
+
+    while start > 0 and bool(mask[start - 1]):
+        start -= 1
+
+    while end < len(mask) - 1 and bool(mask[end + 1]):
+        end += 1
+
+    return start, end
 
 def smooth_signal(signal: np.ndarray, config: PRPConfig) -> np.ndarray:
     return moving_avg(signal.astype(np.float32), config.smooth_samples)
@@ -407,18 +424,18 @@ def detect_bp(
         raise ValueError("Signal must be 1D")
 
     if signal.size == 0:
-        return BPResult(bp_index=None, confidence=0.0, reason="empty signal")
+        return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="empty signal")
 
     if samplerate <= 0:
         raise ValueError("samplerate must be above 0")
-
+    
     if prp_index is None:
-        return BPResult(bp_index=None, confidence=0.0, reason="missing prp")
+        return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="missing prp")
 
     x = np.asarray(signal, dtype=np.float32)
 
     if not np.isfinite(x).all():
-        return BPResult(bp_index=None, confidence=0.0, reason="non-finite signal")
+        return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="non-finite signal")
 
     smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
     offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
@@ -434,7 +451,7 @@ def detect_bp(
     fallback_start = max(cfg.min_index, prp_index + 1)
 
     if search_end <= fallback_start + local_window_n:
-        return BPResult(bp_index=None, confidence=0.0, reason="search window too short")
+        return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="search window too short")
 
     baseline_start = max(0, prp_index - local_window_n)
     baseline = abs_d2[baseline_start:prp_index]
@@ -444,6 +461,7 @@ def detect_bp(
     threshold = float(np.mean(baseline) + cfg.peak_sigma_mult * safe_std(baseline))
 
     def _scan_for_peak(window_start: int) -> BPResult | None:
+        region_mask = abs_d2[window_start:search_end] > threshold
         for i in range(window_start + 1, search_end - 1):
             value = float(abs_d2[i])
 
@@ -456,7 +474,14 @@ def detect_bp(
 
             if is_local_peak and strong_enough:
                 confidence = float(np.clip(value / (threshold + 1e-8), 0.0, 1.0))
-                return BPResult(bp_index=i, confidence=confidence, reason="detected")
+                rel_start, rel_end = expand_region_around_index(region_mask, i - window_start)
+                return BPResult(
+                    start_index=window_start + rel_start,
+                    end_index=window_start + rel_end,
+                    bp_index=i,
+                    confidence=confidence,
+                    reason="detected",
+                )
         return None
 
     if primary_start + local_window_n < search_end:
@@ -468,7 +493,7 @@ def detect_bp(
     if fallback_result is not None:
         return fallback_result
 
-    return BPResult(bp_index=None, confidence=0.0, reason="no bp found")
+    return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="no bp found")
 
 
 def detect_sp(
@@ -484,18 +509,18 @@ def detect_sp(
         raise ValueError("Signal must be 1D")
 
     if signal.size == 0:
-        return SPResult(sp_index=None, confidence=0.0, reason="empty signal")
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="empty signal")
 
     if samplerate <= 0:
         raise ValueError("samplerate must be above 0")
     
     if prp_index is None:
-        return BPResult(bp_index=None, confidence=0.0, reason="missing prp")
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="missing prp")
 
     x = np.asarray(signal, dtype=np.float32)
 
     if not np.isfinite(x).all():
-        return SPResult(sp_index=None, confidence=0.0, reason="non-finite signal")
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="non-finite signal")
 
     smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
     plateau_window_n = min(
@@ -515,7 +540,7 @@ def detect_sp(
 
     peak_motion = float(np.max(trimmed_motion))
     if peak_motion < cfg.min_peak_motion:
-        return SPResult(sp_index=None, confidence=0.0, reason="no significant motion")
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no significant motion")
 
     significant_threshold = cfg.significant_motion_ratio * peak_motion
     settle_threshold = cfg.settle_threshold_ratio * peak_motion
@@ -532,21 +557,22 @@ def detect_sp(
             break
 
     if plateau_start is None:
-        return SPResult(sp_index=None, confidence=0.0, reason="no final plateau found")
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no final plateau found")
 
     search_start = edge_guard
     search_end = plateau_start
     if search_end <= search_start + 3:
-        return SPResult(sp_index=None, confidence=0.0, reason="no pre-plateau region")
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no pre-plateau region")
 
     kink_window = abs_d2[search_start:search_end]
     if kink_window.size == 0:
-        return SPResult(sp_index=None, confidence=0.0, reason="empty sp search window")
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="empty sp search window")
 
     kink_threshold = max(
         0.25 * float(np.max(kink_window)),
         float(np.mean(kink_window) + np.std(kink_window)),
     )
+    kink_mask = kink_window >= kink_threshold
     last_peak_index: int | None = None
 
     for i in range(search_start + 1, search_end - 1):
@@ -556,10 +582,17 @@ def detect_sp(
             last_peak_index = i
 
     if last_peak_index is None:
-        return SPResult(sp_index=None, confidence=0.0, reason="no strong sp kink before plateau")
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no strong sp kink before plateau")
 
     confidence = float(np.clip(abs_d2[last_peak_index] / (np.max(kink_window) + 1e-8), 0.0, 1.0))
-    return SPResult(sp_index=last_peak_index, confidence=confidence, reason="detected")
+    rel_start, rel_end = expand_region_around_index(kink_mask, last_peak_index - search_start)
+    return SPResult(
+        start_index=search_start + rel_start,
+        end_index=search_start + rel_end,
+        sp_index=last_peak_index,
+        confidence=confidence,
+        reason="detected",
+    )
     
     # Gaussian bump to get a soft location target (trying to start with a "general" location for PRP)
 def gaussian(n_samples: int, center: int, samplerate: int, sigma_ms: float) -> np.ndarray:
