@@ -34,17 +34,21 @@ class ValveDataset(Dataset):
     
     def __getitem__(self, index: int) -> dict[str, Any]:
         path = self.file_paths[index]
+        dataset = ValveDataset("src/data/raw/raw1/AHA/events")
 
-        event = load_event(path)
-        processed = self.processor.preprocess_event(event)
+        target_path = "src/data/raw/raw1/AHA/events/AHA_228.json"
+        event = load_event(target_path)
+        processed = dataset.processor.preprocess_event(event)
 
-        signal = processed.signal
+        model_signal = processed.normalized_signal
+        label_signal = processed.resampled_signal
+
         samplerate = processed.samplerate
         n_samples = processed.n_samples
 
-        prp_result = detect_prp(signal, self.prp_config)
-        bp_result = detect_bp(signal, samplerate, prp_result.prp_index, self.bp_config)
-        sp_result = detect_sp(signal, samplerate, bp_result.bp_index, self.sp_config)
+        prp_result = detect_prp(label_signal, self.prp_config)
+        bp_result = detect_bp(label_signal, samplerate, prp_result.prp_index, self.bp_config)
+        sp_result = detect_sp(label_signal, samplerate, prp_result.prp_index, self.sp_config)
 
         prp_target = build_prp_target(
             n_samples=n_samples,
@@ -64,13 +68,14 @@ class ValveDataset(Dataset):
             samplerate=samplerate,
         )
 
-        x = torch.from_numpy(processed.signal).to(torch.float32).unsqueeze(0)
-        y = torch.from_numpy(np.stack([prp_target, bp_target, sp_target], axis=0)).to(torch.float32)
+        x = torch.from_numpy(model_signal).to(torch.float32).unsqueeze(0)   # 1, T
+        y = torch.from_numpy(np.stack([prp_target, bp_target, sp_target], axis=0)).to(torch.float32) # 3, T
 
 
         return{
             "x": x,
             "y": y,
+            "length": n_samples,
             "meta": {
                 "eventid": processed.eventid,
                 "valvetag": processed.valvetag,
@@ -84,3 +89,4 @@ class ValveDataset(Dataset):
                 "sp_index": sp_result.sp_index,
             },
         }
+    

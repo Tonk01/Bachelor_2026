@@ -45,7 +45,7 @@ class PRPResult:
     start_index: int | None
     end_index: int | None
     prp_index: int | None
-    confidence: float
+    confidence: float | None
     reason: str
 
 @dataclass (frozen = True)
@@ -260,12 +260,11 @@ def build_regions_with_stats(mask: np.ndarray, strength_signal: np.ndarray) -> l
 
     return regions
 
-def select_earliest_strong_region(regions: list[PRPRegion], config: PRPConfig,) -> PRPRegion | None: 
+def select_earliest_strong_region(regions: list[PRPRegion]) -> PRPRegion | None: 
     
-    for region in regions:
-        if region.peak_strength >= config.min_change_multiplier:
-            return region
-    return None
+    if not regions:
+        return None
+    return regions[0]
 
 
 def tighten_region(region: PRPRegion, strength_signal: np.ndarray, inner_region_ratio: float) -> PRPRegion:
@@ -294,7 +293,7 @@ def build_prp_result(selected_regions: PRPRegion | None) -> PRPResult:
             start_index=None,
             end_index=None,
             prp_index=None,
-            confidence=None,
+            confidence=0.0,
             reason="No candidate region passed the minimum peak strength"
         )
     
@@ -302,8 +301,8 @@ def build_prp_result(selected_regions: PRPRegion | None) -> PRPResult:
         start_index=selected_regions.start_index,
         end_index=selected_regions.end_index,
         prp_index=selected_regions.midpoint_index,
-        confidence=selected_regions.peak_strength,
-        reason=" Select midpoint of earliest strong candidate region"
+        confidence=float(selected_regions.peak_strength),
+        reason=" Select midpoint of earliest strong candidate region",
     )
 
 def detect_prp(signal: np.ndarray, config: PRPConfig) -> PRPResult:
@@ -314,7 +313,6 @@ def detect_prp(signal: np.ndarray, config: PRPConfig) -> PRPResult:
     
     if len(signal) == 0:
         raise ValueError("detect prp expects a non empty signal")
-
 
     smoothed = smooth_signal(signal, config)
 
@@ -359,10 +357,7 @@ def detect_prp(signal: np.ndarray, config: PRPConfig) -> PRPResult:
         strength_signal=change_strength,
     )
 
-    selected_region = select_earliest_strong_region(
-        regions=regions,
-        config=config,
-    )
+    selected_region = select_earliest_strong_region(regions=regions)
 
     if selected_region is not None:
         selected_region = tighten_region(
@@ -559,7 +554,7 @@ def detect_sp(
     if plateau_start is None:
         return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no final plateau found")
 
-    search_start = edge_guard
+    search_start = max(edge_guard, prp_index + 1)
     search_end = plateau_start
     if search_end <= search_start + 3:
         return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no pre-plateau region")
