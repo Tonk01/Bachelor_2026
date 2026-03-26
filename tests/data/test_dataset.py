@@ -65,70 +65,8 @@ def test_dataset() -> None:
     print("PROCESSED_DURATION:", processed.duration_sec)
 
     print("PRP_INDEX:", prp_result.prp_index)
-    print("PRP_START:", prp_result.start_index)
-    print("PRP_END:", prp_result.end_index)
-    print("PRP_REASON:", prp_result.reason)
-
     print("BP_INDEX:", bp_result.bp_index)
-    print("BP_START:", bp_result.start_index)
-    print("BP_END:", bp_result.end_index)
-    print("BP_REASON:", bp_result.reason)
-
     print("SP_INDEX:", sp_result.sp_index)
-    print("SP_START:", sp_result.start_index)
-    print("SP_END:", sp_result.end_index)
-    print("SP_REASON:", sp_result.reason)
-
-    signal = label_signal
-    smooth = moving_avg(signal.astype(np.float32), dataset.prp_config.smooth_samples)
-    time_sec = np.arange(len(signal), dtype=np.float32) / float(samplerate)
-
-    plt.figure(figsize=(14, 5))
-
-    plt.plot(time_sec, signal, label="resampled signal", alpha=0.6)
-    plt.plot(time_sec, smooth, label="smoothed signal", linewidth=2)
-
-    if prp_result.start_index is not None and prp_result.end_index is not None:
-        plt.axvspan(
-        prp_result.start_index / samplerate,
-        prp_result.end_index / samplerate,
-        alpha=0.2,
-        label="PRP region",
-    )
-
-    if prp_result.prp_index is not None:
-        plt.axvline(
-        prp_result.prp_index / samplerate,
-        linestyle="--",
-        color="blue",
-        label=f"PRP {prp_result.prp_index}",
-    )
-
-    if bp_result.bp_index is not None:
-        plt.axvline(
-            bp_result.bp_index / samplerate,
-            linestyle="--",
-            color="red",
-            label=f"BP {bp_result.bp_index}",
-    )
-
-    if sp_result.sp_index is not None:
-        plt.axvline(
-            sp_result.sp_index / samplerate,
-            linestyle="--",
-            color="green",
-            label=f"SP {sp_result.sp_index}",
-    )
-
-    plt.title(f"Signal with PRP/BP/SP markers: {target_path}")
-    plt.xlabel("Time (seconds)")
-    plt.ylabel("Pressure")
-    plt.xlim(0, 20)
-    plt.grid(True)
-    plt.legend()
-
-    plt.tight_layout()
-    plt.show()
 
 
 if __name__ == "__main__":

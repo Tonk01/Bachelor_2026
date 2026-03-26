@@ -34,11 +34,8 @@ class ValveDataset(Dataset):
     
     def __getitem__(self, index: int) -> dict[str, Any]:
         path = self.file_paths[index]
-        dataset = ValveDataset("src/data/raw/raw1/AHA/events")
-
-        target_path = "src/data/raw/raw1/AHA/events/AHA_228.json"
-        event = load_event(target_path)
-        processed = dataset.processor.preprocess_event(event)
+        event = load_event(path)
+        processed = self.processor.preprocess_event(event)
 
         model_signal = processed.normalized_signal
         label_signal = processed.resampled_signal
