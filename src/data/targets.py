@@ -66,11 +66,15 @@ class PRPRegion:
 @dataclass(frozen = True)
 class BPConfig:
     smooth_ms: float = 10.0
-    search_start_offset_ms: float = 400.0
+    search_start_offset_ms: float = 250.0
     search_end_ratio: float = 0.75
     peak_sigma_mult: float = 3.0
     local_window_ms: float = 25.0
     min_index: int = 0
+    min_region_width: int = 3
+    inner_region_ratio: float = 0.7
+    motion_threshold_ratio: float = 0.35
+    motion_reference_window_ms: float = 500.0
 
 @dataclass(frozen = True)
 class BPResult:
@@ -84,10 +88,20 @@ class BPResult:
 @dataclass(frozen = True)
 class SPConfig:
     smooth_ms: float = 10.0
-    significant_motion_ratio: float = 0.25
     settle_threshold_ratio: float = 0.12
     min_peak_motion: float = 1e-6
     final_plateau_window_ms: float = 800.0
+    acceleration_sigma_mult: float = 2.0
+    late_search_ratio: float = 0.35
+    pre_window_ms: float = 40.0
+    post_window_ms: float = 40.0
+    noise_window_ms: float = 40.0
+    future_confirm_ms: float = 150.0
+    min_change_multiplier: float = 3.3
+    min_absolute_change: float = 8e-6
+    min_future_net_change: float = 7e-6
+    inner_region_ratio: float = 0.7
+    min_region_width: int = 3
 
 
 @dataclass(frozen = True)
@@ -439,6 +453,7 @@ def detect_bp(
     x_smooth = moving_avg(x, smooth_n)
     d1 = np.gradient(x_smooth)
     d2 = np.gradient(d1)
+    abs_d1 = np.abs(d1)
     abs_d2 = np.abs(d2)
 
     search_end = min(int(round(x.size * cfg.search_end_ratio)), x.size)
@@ -448,43 +463,93 @@ def detect_bp(
     if search_end <= fallback_start + local_window_n:
         return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="search window too short")
 
-    baseline_start = max(0, prp_index - local_window_n)
-    baseline = abs_d2[baseline_start:prp_index]
-    if baseline.size == 0:
-        baseline = abs_d2[:local_window_n]
+    def _select_region(window_start: int) -> BPResult | None:
+        if window_start + local_window_n >= search_end:
+            return None
 
-    threshold = float(np.mean(baseline) + cfg.peak_sigma_mult * safe_std(baseline))
+        baseline_start = max(0, prp_index - local_window_n)
+        baseline_kink = abs_d2[baseline_start:prp_index]
+        if baseline_kink.size == 0:
+            baseline_kink = abs_d2[:local_window_n]
 
-    def _scan_for_peak(window_start: int) -> BPResult | None:
-        region_mask = abs_d2[window_start:search_end] > threshold
-        for i in range(window_start + 1, search_end - 1):
+        kink_threshold = float(np.mean(baseline_kink) + cfg.peak_sigma_mult * safe_std(baseline_kink))
+
+        motion_window = abs_d1[window_start:search_end]
+        kink_window = abs_d2[window_start:search_end]
+        if motion_window.size == 0 or kink_window.size == 0:
+            return None
+
+        max_motion = float(np.max(motion_window))
+        max_kink = float(np.max(kink_window))
+        if max_motion <= 0.0 or max_kink <= 0.0:
+            return None
+
+        norm_motion = motion_window / (max_motion + 1e-8)
+        norm_kink = kink_window / (max_kink + 1e-8)
+        bp_strength = 0.5 * norm_motion + 0.5 * norm_kink
+
+        reference_window_n = ms_to_samples(cfg.motion_reference_window_ms, samplerate)
+        reference_end = min(search_end, window_start + reference_window_n)
+        reference_motion = abs_d1[window_start:reference_end]
+        if reference_motion.size == 0:
+            reference_motion = motion_window
+
+        reference_peak_motion = float(np.max(reference_motion))
+        motion_threshold = cfg.motion_threshold_ratio * reference_peak_motion
+        motion_mask = motion_window >= motion_threshold
+        regions = build_regions_with_stats(motion_mask, bp_strength)
+
+        selected_region: PRPRegion | None = None
+        fallback_region: PRPRegion | None = None
+        for region in regions:
+            if fallback_region is None:
+                fallback_region = region
+            if region.width >= cfg.min_region_width:
+                selected_region = region
+                break
+
+        if selected_region is None:
+            selected_region = fallback_region
+
+        if selected_region is None:
+            return None
+
+        selected_region = tighten_region(
+            region=selected_region,
+            strength_signal=bp_strength,
+            inner_region_ratio=cfg.inner_region_ratio,
+        )
+
+        region_start = window_start + selected_region.start_index
+        region_end = window_start + selected_region.end_index
+
+        bp_index: int | None = None
+        point_search_start = region_start + max(1, (region_end - region_start) // 4)
+        for i in range(point_search_start, region_end):
             value = float(abs_d2[i])
+            if value < kink_threshold:
+                continue
+            if value >= float(abs_d2[i - 1]) and value >= float(abs_d2[i + 1]):
+                bp_index = i
+                break
 
-            left = max(window_start, i - local_window_n)
-            right = min(search_end, i + local_window_n + 1)
-            local_slice = abs_d2[left:right]
+        if bp_index is None:
+            bp_index = selected_region.midpoint_index + window_start
 
-            is_local_peak = value >= float(np.max(local_slice))
-            strong_enough = value > threshold
+        confidence = float(np.clip(selected_region.peak_strength, 0.0, 1.0))
+        return BPResult(
+            start_index=region_start,
+            end_index=region_end,
+            bp_index=bp_index,
+            confidence=confidence,
+            reason="detected from earliest strong bp region",
+        )
 
-            if is_local_peak and strong_enough:
-                confidence = float(np.clip(value / (threshold + 1e-8), 0.0, 1.0))
-                rel_start, rel_end = expand_region_around_index(region_mask, i - window_start)
-                return BPResult(
-                    start_index=window_start + rel_start,
-                    end_index=window_start + rel_end,
-                    bp_index=i,
-                    confidence=confidence,
-                    reason="detected",
-                )
-        return None
+    primary_result = _select_region(primary_start)
+    if primary_result is not None:
+        return primary_result
 
-    if primary_start + local_window_n < search_end:
-        primary_result = _scan_for_peak(primary_start)
-        if primary_result is not None:
-            return primary_result
-
-    fallback_result = _scan_for_peak(fallback_start)
+    fallback_result = _select_region(fallback_start)
     if fallback_result is not None:
         return fallback_result
 
@@ -524,8 +589,9 @@ def detect_sp(
     )
 
     x_smooth = moving_avg(x, smooth_n)
-    motion = np.abs(np.gradient(x_smooth))
-    abs_d2 = np.abs(np.gradient(np.gradient(x_smooth)))
+    d1 = np.gradient(x_smooth)
+    d2 = np.gradient(d1)
+    motion = np.abs(d1)
     edge_guard = max(5, smooth_n * 2)
 
     if motion.size > 2 * edge_guard:
@@ -537,7 +603,6 @@ def detect_sp(
     if peak_motion < cfg.min_peak_motion:
         return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no significant motion")
 
-    significant_threshold = cfg.significant_motion_ratio * peak_motion
     settle_threshold = cfg.settle_threshold_ratio * peak_motion
 
     plateau_start: int | None = None
@@ -554,39 +619,122 @@ def detect_sp(
     if plateau_start is None:
         return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no final plateau found")
 
-    search_start = max(edge_guard, prp_index + 1)
+    base_search_start = max(edge_guard, prp_index + 1)
     search_end = plateau_start
+    total_search_width = search_end - base_search_start
+    late_search_start = search_end - int(round(total_search_width * cfg.late_search_ratio))
+    search_start = max(base_search_start, late_search_start)
     if search_end <= search_start + 3:
         return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no pre-plateau region")
 
-    kink_window = abs_d2[search_start:search_end]
-    if kink_window.size == 0:
+    signed_accel = d2[search_start:search_end]
+    if signed_accel.size > 0:
+        overall_direction = float(x_smooth[plateau_start] - x_smooth[prp_index])
+        direction_sign = 1.0 if overall_direction >= 0.0 else -1.0
+        directional_accel = signed_accel * direction_sign
+
+        accel_baseline = directional_accel[:max(5, min(len(directional_accel), ms_to_samples(200.0, samplerate)))]
+        accel_threshold = float(np.mean(accel_baseline) + cfg.acceleration_sigma_mult * safe_std(accel_baseline))
+        accel_threshold = max(accel_threshold, 0.1 * float(np.max(directional_accel)))
+
+        accel_mask = directional_accel >= accel_threshold
+        accel_strength = np.clip(directional_accel / (np.max(directional_accel) + 1e-8), 0.0, None)
+        accel_regions = build_regions_with_stats(accel_mask, accel_strength)
+
+        selected_accel_region: PRPRegion | None = None
+        fallback_accel_region: PRPRegion | None = None
+        for region in accel_regions:
+            if fallback_accel_region is None:
+                fallback_accel_region = region
+            if region.width >= cfg.min_region_width:
+                selected_accel_region = region
+                break
+
+        if selected_accel_region is None:
+            selected_accel_region = fallback_accel_region
+
+        if selected_accel_region is not None:
+            selected_accel_region = tighten_region(
+                region=selected_accel_region,
+                strength_signal=accel_strength,
+                inner_region_ratio=cfg.inner_region_ratio,
+            )
+
+            region_start = search_start + selected_accel_region.start_index
+            region_end = search_start + selected_accel_region.end_index
+            sp_index = region_start
+
+            return SPResult(
+                start_index=region_start,
+                end_index=region_end,
+                sp_index=sp_index,
+                confidence=float(selected_accel_region.peak_strength),
+                reason="Select start of earliest strong acceleration region in late pre-plateau window",
+            )
+
+    search_signal = x_smooth[search_start:search_end]
+    if search_signal.size < 5:
         return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="empty sp search window")
 
-    kink_threshold = max(
-        0.25 * float(np.max(kink_window)),
-        float(np.mean(kink_window) + np.std(kink_window)),
+    # Reverse the pre-plateau segment so the latest strong region before plateau
+    # becomes the earliest strong region in reversed time.
+    reversed_signal = search_signal[::-1].copy()
+
+    pre_window_n = ms_to_samples(cfg.pre_window_ms, samplerate)
+    post_window_n = ms_to_samples(cfg.post_window_ms, samplerate)
+    noise_window_n = ms_to_samples(cfg.noise_window_ms, samplerate)
+    future_confirm_n = ms_to_samples(cfg.future_confirm_ms, samplerate)
+
+    local_std = compute_local_std(reversed_signal, noise_window_n)
+    local_change = compute_local_change(reversed_signal, pre_window_n, post_window_n)
+    change_strength = compute_change_strength(local_change=local_change, local_std=local_std)
+    future_net_rise = compute_future_net_rise(reversed_signal, future_confirm_n)
+    future_net_drop = compute_future_net_drop(reversed_signal, future_confirm_n)
+
+    candidate_mask = compute_change_candidates(
+        local_change=local_change,
+        change_strength=change_strength,
+        future_net_rise=future_net_rise,
+        future_net_drop=future_net_drop,
+        min_change_multiplier=cfg.min_change_multiplier,
+        min_absolute_change=cfg.min_absolute_change,
+        min_future_net_change=cfg.min_future_net_change,
     )
-    kink_mask = kink_window >= kink_threshold
-    last_peak_index: int | None = None
 
-    for i in range(search_start + 1, search_end - 1):
-        value = float(abs_d2[i])
-        is_local_peak = value >= float(abs_d2[i - 1]) and value >= float(abs_d2[i + 1])
-        if is_local_peak and value >= kink_threshold:
-            last_peak_index = i
+    reversed_regions = build_regions_with_stats(candidate_mask, change_strength)
 
-    if last_peak_index is None:
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no strong sp kink before plateau")
+    selected_region: PRPRegion | None = None
+    fallback_region: PRPRegion | None = None
+    for region in reversed_regions:
+        if region.peak_strength >= cfg.min_change_multiplier:
+            if fallback_region is None:
+                fallback_region = region
+            if region.width >= cfg.min_region_width:
+                selected_region = region
+                break
 
-    confidence = float(np.clip(abs_d2[last_peak_index] / (np.max(kink_window) + 1e-8), 0.0, 1.0))
-    rel_start, rel_end = expand_region_around_index(kink_mask, last_peak_index - search_start)
+    if selected_region is None:
+        selected_region = fallback_region
+
+    if selected_region is None:
+        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no strong sp region before plateau")
+
+    selected_region = tighten_region(
+        region=selected_region,
+        strength_signal=change_strength,
+        inner_region_ratio=cfg.inner_region_ratio,
+    )
+
+    region_start = search_end - 1 - selected_region.end_index
+    region_end = search_end - 1 - selected_region.start_index
+    sp_index = (region_start + region_end) // 2
+
     return SPResult(
-        start_index=search_start + rel_start,
-        end_index=search_start + rel_end,
-        sp_index=last_peak_index,
-        confidence=confidence,
-        reason="detected",
+        start_index=region_start,
+        end_index=region_end,
+        sp_index=sp_index,
+        confidence=float(selected_region.peak_strength),
+        reason="Select midpoint of latest strong candidate region before plateau",
     )
     
     # Gaussian bump to get a soft location target (trying to start with a "general" location for PRP)
