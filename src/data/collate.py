@@ -17,11 +17,11 @@ def pad_tensor(x: torch.Tensor, target_length: int) -> torch.Tensor:
     return F.pad(x, (0, pad_amount), value = 0.0)
 
 
-def valve_collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
-    print("CUSTOM COLLATE RUNNING")
+def valve_collate(batch: list[dict[str, Any] | None]) -> dict[str, Any]:
+    batch = [sample for sample in batch if sample is not None]
 
     if len(batch) == 0:
-        raise ValueError("Empty batch")
+        return None
     
     lengths = torch.tensor([sample["length"] for sample in batch], dtype = torch.long)
     max_length = int(lengths.max().item())

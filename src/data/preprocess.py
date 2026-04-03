@@ -9,7 +9,7 @@ from .data_loader import Event
 
 @dataclass (frozen = True)
 class PreprocessingConfig:
-    allowed_samplerate: tuple[int, ...] = (400, 1000)
+    allowed_samplerate: tuple[int, ...] = (200, 400, 800, 1000)
     target_samplerate: int = 400
     normalize_for_model: bool = True
     normal_eps: float = 1e-8

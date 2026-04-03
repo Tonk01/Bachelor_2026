@@ -31,58 +31,63 @@ class ValveDataset(Dataset):
     def __len__(self) -> int:
         return len(self.file_paths)
     
-    def __getitem__(self, index: int) -> dict[str, Any]:
+    def __getitem__(self, index: int) -> dict[str, Any] | None: 
         path = self.file_paths[index]
-        event = load_event(path)
-        processed = self.processor.preprocess_event(event)
 
-        model_signal = processed.normalized_signal
-        label_signal = processed.resampled_signal
+        try:
+            event = load_event(path)
+            processed = self.processor.preprocess_event(event)
 
-        samplerate = processed.samplerate
-        n_samples = processed.n_samples
+            model_signal = processed.normalized_signal
+            label_signal = processed.resampled_signal
 
-        prp_result = detect_prp(label_signal, self.prp_config)
-        bp_result = detect_bp(label_signal, samplerate, prp_result.prp_index, self.bp_config)
-        sp_result = detect_sp(label_signal, samplerate, prp_result.prp_index, self.sp_config)
+            samplerate = processed.samplerate
+            n_samples = processed.n_samples
 
-        prp_target = build_prp_target(
-            n_samples=n_samples,
-            prp_index=prp_result.prp_index,
-            samplerate=samplerate,
-        )
+            prp_result = detect_prp(label_signal, self.prp_config)
+            bp_result = detect_bp(label_signal, samplerate, prp_result.prp_index, self.bp_config)
+            sp_result = detect_sp(label_signal, samplerate, prp_result.prp_index, self.sp_config)
 
-        bp_target = build_bp_target(
-            n_samples=n_samples,
-            bp_index=bp_result.bp_index,
-            samplerate=samplerate,
-        )
+            prp_target = build_prp_target(
+                n_samples=n_samples,
+                prp_index=prp_result.prp_index,
+                samplerate=samplerate,
+            )
 
-        sp_target = build_sp_target(
-            n_samples=n_samples,
-            sp_index=sp_result.sp_index,
-            samplerate=samplerate,
-        )
+            bp_target = build_bp_target(
+                n_samples=n_samples,
+                bp_index=bp_result.bp_index,
+                samplerate=samplerate,
+            )
 
-        x = torch.from_numpy(model_signal).to(torch.float32).unsqueeze(0)   # 1, T
-        y = torch.from_numpy(np.stack([prp_target, bp_target, sp_target], axis=0)).to(torch.float32) # 3, T
+            sp_target = build_sp_target(
+                n_samples=n_samples,
+                sp_index=sp_result.sp_index,
+                samplerate=samplerate,
+            )
+
+            x = torch.from_numpy(model_signal).to(torch.float32).unsqueeze(0)   # 1, T
+            y = torch.from_numpy(np.stack([prp_target, bp_target, sp_target], axis=0)).to(torch.float32) # 3, T
 
 
-        return{
-            "x": x,
-            "y": y,
-            "length": n_samples,
-            "meta": {
-                "eventid": processed.eventid,
-                "valvetag": processed.valvetag,
-                "sitename": processed.sitename,
-                "samplerate": processed.samplerate,
-                "n_samples": processed.n_samples,
-                "duration_sec": processed.duration_sec,
-                "path": processed.path,
-                "prp_index": prp_result.prp_index,
-                "bp_index": bp_result.bp_index,
-                "sp_index": sp_result.sp_index,
-            },
-        }
+            return{
+                "x": x,
+                "y": y,
+                "length": n_samples,
+                "meta": {
+                    "eventid": processed.eventid,
+                    "valvetag": processed.valvetag,
+                    "sitename": processed.sitename,
+                    "samplerate": processed.samplerate,
+                    "n_samples": processed.n_samples,
+                    "duration_sec": processed.duration_sec,
+                    "path": processed.path,
+                    "prp_index": prp_result.prp_index,
+                    "bp_index": bp_result.bp_index,
+                    "sp_index": sp_result.sp_index,
+                },
+            }
     
+        except Exception as e:
+            print(f"Skipping sample at {path}: {e}")
+            return None
