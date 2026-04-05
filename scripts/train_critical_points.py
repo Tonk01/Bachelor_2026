@@ -244,14 +244,14 @@ def main() -> None:
         "val_loss": [float(x) for x in history ["val_loss"]],
     }
 
-    with (run_dir / "history_json").open("w", encoding="utf-8") as fp:
+    with (run_dir / "history.json").open("w", encoding="utf-8") as fp:
         json.dump(history_json, fp, indent=2)
 
         torch.save(model.state_dict(), run_dir / "best_model.pt")
 
-        best_val_loss = min(history["val_loss"]) if history ["val_loss"] else None
-        final_train_loss = history["train_loss"][-1] if history["train_loss"] else None
-        final_val_loss = history["val_loss"][-1] if history["val_loss"] else None
+    best_val_loss = min(history["val_loss"]) if history ["val_loss"] else None
+    final_train_loss = history["train_loss"][-1] if history["train_loss"] else None
+    final_val_loss = history["val_loss"][-1] if history["val_loss"] else None
 
     run_summary = {
         "seed": seed,
