@@ -208,27 +208,51 @@ def smooth_signal(signal: np.ndarray, config: PRPConfig) -> np.ndarray:
 
 def compute_local_std(signal: np.ndarray, window_samples: int, min_std: float = 1e-12) -> np.ndarray:
 
-    signal = np.asarray(signal, dtype=np.float32)
-    n = len(signal)
-    local_std = np.zeros(n, dtype=np.float32)
+    x = np.asarray(signal, dtype=np.float32)
+    n = x.size
+
     half = window_samples // 2
+
+    cumulative_sum = np.zeros(n + 1, dtype=np.float32)
+    cumulative_sum[1:] = np.cumsum(x)
+
+    cumulative_sum_sq = np.zeros(n + 1, dtype=np.float32)
+    cumulative_sum_sq[1:] = np.cumsum(x * x)
+
+    local_std = np.zeros(n, dtype=np.float32)
 
     for i in range(n):
         start = max(0, i - half)
         stop = min(n, i + half + 1)
-        window = signal[start:stop]
 
-        if len(window) < 2:
+        length = stop - start
+
+        if length < 2:
             local_std[i] = min_std
-        else: 
-            local_std[i] = max(float(np.std(window)), min_std)
+            continue
+
+        sum_x = cumulative_sum[stop] - cumulative_sum[start]
+        sum_x2 = cumulative_sum_sq[stop] - cumulative_sum_sq[start]
+
+        mean = sum_x / length
+        mean_sq = sum_x2 / length
+
+        var = mean_sq - mean * mean
+        var = max(var, 0.0)
+
+        std = np.sqrt(var)
+        local_std[i] = max(std, min_std)
     
     return local_std
 
 def compute_local_change(signal: np.ndarray, pre_window_samples: int, post_window_samples: int) -> np.ndarray:
 
-    signal = np.asarray(signal, dtype=np.float32)
-    n = len(signal)
+    x = np.asarray(signal, dtype=np.float32)
+    n = x.size
+
+    cumulative_sum = np.zeros(n + 1, dtype=np.float32)
+    cumulative_sum[1:] = np.cumsum(x)
+
     local_change = np.zeros(n, dtype=np.float32)
 
     for i in range(n):
@@ -238,13 +262,19 @@ def compute_local_change(signal: np.ndarray, pre_window_samples: int, post_windo
         post_start = i
         post_stop = min(n, i + post_window_samples)
 
-        pre_window = signal[pre_start:pre_stop]
-        post_window = signal[post_start:post_stop]
+        pre_len = pre_stop - pre_start
+        post_len = post_stop - post_start
 
-        if len(pre_window) == 0 or len(post_window) == 0:
-            local_change[i] = 0.0
-        else:
-            local_change[i] = float(np.mean(post_window) - np.mean(pre_window))
+        if pre_len == 0 or post_len == 0:
+            continue
+
+        pre_sum = cumulative_sum[pre_stop] - cumulative_sum[pre_start]
+        post_sum = cumulative_sum[post_stop] - cumulative_sum[post_start]
+
+        pre_mean = pre_sum / pre_len
+        post_mean = post_sum / post_len
+
+        local_change[i] = post_mean - pre_mean
 
     return local_change
 

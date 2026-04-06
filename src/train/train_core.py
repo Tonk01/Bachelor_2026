@@ -17,7 +17,6 @@ class TrainConfig:
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4  
     workers: int = 0
-    print_every: int = 10
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
@@ -51,7 +50,6 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     criterion: MaskedBCELoss,
     device: torch.device,
-    print_every: int = 10,
 ) -> float:
     model.train()
 
@@ -193,7 +191,6 @@ def fit(
             optimizer=optimizer,
             criterion=criterion,
             device=device,
-            print_every=cfg.print_every,
         )
 
         val_loss = validate_one_epoch(
