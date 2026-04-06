@@ -20,11 +20,13 @@ load_dotenv(dotenv_path=str(dotenv_path), override=True)
 
 from src.data.dataset import ValveDataset
 from src.train.train_core import TrainConfig, fit
+from src.data.preprocess import EventProcessor, PreprocessingConfig
+from src.data.targets import (PRPConfig, BPConfig, SPConfig, detect_prp, detect_bp, detect_sp, build_prp_target, build_bp_target, build_sp_target)
 
 
 SEED = 42
 BATCH_SIZE = 32
-EPOCHS = 10
+EPOCHS = 1
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
 
@@ -155,6 +157,52 @@ def _build_train_config(
         workers=workers,
     )
 
+
+def build_targets(processed_event) -> torch.Tensor:
+    signal = processed_event.resampled_signal
+    samplerate = processed_event.samplerate
+    n_samples = processed_event.n_samples
+
+    prp_result = detect_prp(
+        signal=signal,
+        config=PRPConfig(samplerate=samplerate),
+    )
+
+    bp_result = detect_bp(
+        signal=signal,
+        samplerate=samplerate,
+        prp_index=prp_result.prp_index,
+        config=BPConfig(),
+    )
+
+    sp_result = detect_sp(
+        signal=signal,
+        samplerate=samplerate,
+        prp_index=prp_result.prp_index,
+        config=SPConfig()
+    )
+
+    prp_target = build_prp_target(
+        n_samples=n_samples,
+        prp_index=prp_result.prp_index,
+        samplerate=samplerate,
+    )
+
+    bp_target = build_bp_target(
+        n_samples=n_samples,
+        bp_index=bp_result.bp_index,
+        samplerate=samplerate,
+    )
+
+    sp_target = build_sp_target(
+        n_samples=n_samples,
+        sp_index=sp_result.sp_index,
+        samplerate=samplerate,
+    )
+
+    y = np.stack([prp_target, bp_target, sp_target], axis=0)
+    return torch.from_numpy(y).to(torch.float32)
+
 def main() -> None:
     seed = _env_int("SEED", SEED)
     batch_size = _env_int("BATCH_SIZE", BATCH_SIZE)
@@ -180,7 +228,10 @@ def main() -> None:
 
     dataset_root = _require_dataset_path()
     print("Dataset path:", dataset_root)
-    full_dataset = ValveDataset(dataset_root)
+
+    preprocessor = EventProcessor(PreprocessingConfig())
+
+    full_dataset = ValveDataset(dataset_root, preprocessor=preprocessor, target_builder=build_targets)
 
     n_total = len(full_dataset)
 
@@ -203,12 +254,6 @@ def main() -> None:
     train_dataset = Subset(full_dataset, train_idx.tolist())
     val_dataset = Subset(full_dataset, val_idx.tolist())
     test_dataset = Subset(full_dataset, test_idx.tolist())
-
-    print("Split sizes: ")
-    print(f" train: {len(train_idx)}")
-    print(f" val: {len(val_idx)}")
-    print(f" test: {len(test_idx)}")
-    #print(f" total: {len(train_idx) + len(val_idx) + len(test_idx)} / {n_total}")
 
     _summarize_subset("Train", train_dataset)
     _summarize_subset("Val", val_dataset)
@@ -247,7 +292,7 @@ def main() -> None:
     with (run_dir / "history.json").open("w", encoding="utf-8") as fp:
         json.dump(history_json, fp, indent=2)
 
-        torch.save(model.state_dict(), run_dir / "best_model.pt")
+    torch.save(model.state_dict(), run_dir / "best_model.pt")
 
     best_val_loss = min(history["val_loss"]) if history ["val_loss"] else None
     final_train_loss = history["train_loss"][-1] if history["train_loss"] else None

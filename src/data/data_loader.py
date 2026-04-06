@@ -30,6 +30,10 @@ def load_event(path: Path) -> Event:
             raise ValueError(f"Invalid samplerate in {path}")
         
         n_samples = len(signal)
+
+        if n_samples == 0:
+            raise ValueError(f"Empty eventdata in {path}")
+
         duration_sec = n_samples / samplerate
 
         return Event(
@@ -47,33 +51,34 @@ def iter_event_files(*roots: str | Path) -> Iterator[Path]:
     seen: set[Path] = set()
 
     for root in roots:
-        root = Path(root)
+        root_path = Path(root)
 
-        if not root.exists():
+        if not root_path.exists():
             continue
 
-        for path in root.rglob("*.json"):
+        for path in root_path.rglob("*.json"):
             resolved_path = path.resolve()
-            if (
-                "events" in path.parts
-                and "eventids" not in path.parts
-                and resolved_path not in seen
-            ):
-                seen.add(resolved_path)
-                yield path
+
+            if resolved_path in seen:
+                continue
+
+            seen.add(resolved_path)
+            yield path
 
 
 def find_event_files(*roots: str | Path) -> list[Path]:
     return list(iter_event_files(*roots))
 
 
-def load_all_events(*roots: str | Path, limit: int | None = None) -> tuple[list[Event], list[tuple[str, str]]]:
+def load_all_events(*roots: str | Path, limit: int | None = None
+) -> tuple[list[Event], list[tuple[str, str]]]:
+    
     events: list[Event] = []
     errors: list[tuple[str, str]] = []
 
     for path in iter_event_files(*roots):
         if limit is not None and len(events) >= limit:
-            return events, errors
+            break
 
         try:
             events.append(load_event(path))

@@ -14,7 +14,7 @@ class PRPConfig:
 
     min_change_multiplier: float = 3.3  # 3.3
     min_absolute_change: float = 8e-6   # 8e-6
-    min_future_net_change: float = 7e-6 # 7e-6 <-- update these if you find better. 
+    min_future_net_change: float = 7e-6 # 7e-6 <-- update these if you find better.
 
     inner_region_ratio: float = 0.7
 
@@ -112,9 +112,36 @@ class SPResult:
     confidence: float
     reason: str
 
+@dataclass(frozen = True)
+class SharedSignalFeatures:
+    signal: np.ndarray
+    samplerate: int
+
+    smooth_10: np.ndarray
+    d1_10: np.ndarray
+    d2_10: np.ndarray
+    abs_d1: np.ndarray
+    abs_d2: np.ndarray
+    
+    smooth_15: np.ndarray   
+
 def ms_to_samples(ms: float, samplerate: int, minimum: int = 1) -> int: 
     n = int(round((ms / 1000.0) * samplerate))
     return max(minimum, n)
+
+def validate_signal_1d(signal: np.ndarray | list[float]) -> np.ndarray:
+    x = np.asarray(signal, dtype=np.float32)
+
+    if x.ndim != 1:
+        raise ValueError("signal must be 1d")
+    
+    if x.size == 0:
+        raise ValueError("signal must be non-empty")
+    
+    if not np.isfinite(x).all():
+        raise ValueError("Signal contains NaN or INF")
+    
+    return x
 
 def moving_avg(x: np.ndarray, window: int) -> np.ndarray:
     if window <= 1:
@@ -132,23 +159,56 @@ def safe_std(x: np.ndarray, eps: float = 1e-8) -> float:
     std = float(np.std(x))
     return max(std, eps)
 
+    # Gaussian bump to get a soft location target (trying to start with a "general" location for PRP)
+def gaussian(n_samples: int, center: int, samplerate: int, sigma_ms: float) -> np.ndarray:
+    if n_samples <= 0:
+        raise ValueError("n_samples must be more than 0")
+    
+    if center < 0 or center >= n_samples:
+        raise ValueError("center is out of bounds")
+    
+    sigma_samples = max((sigma_ms / 1000.0) * samplerate, 1.0)
 
-def expand_region_around_index(mask: np.ndarray, center: int) -> tuple[int, int]:
-    start = center
-    end = center
+    idx = np.arange(n_samples, dtype = np.float32)
+    bump = np.exp(-0.5 * ((idx - float(center)) / float(sigma_samples)) ** 2)
+    return bump.astype(np.float32)
 
-    while start > 0 and bool(mask[start - 1]):
-        start -= 1
 
-    while end < len(mask) - 1 and bool(mask[end + 1]):
-        end += 1
+def compute_shared_features(signal: np.ndarray | list[float], samplerate: int) -> SharedSignalFeatures:
+    x = validate_signal_1d(signal)
 
-    return start, end
+    if samplerate <= 0:
+        raise ValueError("samplerate must be more than 0")
+    
+    smooth_10_n = ms_to_samples(10.0, samplerate, minimum=3)
+    smooth_15_n = ms_to_samples(15.0, samplerate, minimum=3)
+
+    smooth_10 = moving_avg(x, smooth_10_n)
+    d1_10 = np.gradient(smooth_10).astype(np.float32)
+    d2_10 = np.gradient(d1_10).astype(np.float32)
+
+    abs_d1 = np.abs(d1_10).astype(np.float32)
+    abs_d2 = np.abs(d2_10).astype(np.float32)
+    
+    smooth_15 = moving_avg(x, smooth_15_n)
+
+    return SharedSignalFeatures(
+        signal=x,
+        samplerate=samplerate,
+        smooth_10=smooth_10,
+        d1_10=d1_10,
+        d2_10=d2_10,
+        abs_d1=abs_d1,
+        abs_d2=abs_d2,
+        smooth_15=smooth_15,
+    )
 
 def smooth_signal(signal: np.ndarray, config: PRPConfig) -> np.ndarray:
     return moving_avg(signal.astype(np.float32), config.smooth_samples)
 
 def compute_local_std(signal: np.ndarray, window_samples: int, min_std: float = 1e-12) -> np.ndarray:
+
+    signal = np.asarray(signal, dtype=np.float32)
     n = len(signal)
     local_std = np.zeros(n, dtype=np.float32)
     half = window_samples // 2
@@ -166,6 +226,8 @@ def compute_local_std(signal: np.ndarray, window_samples: int, min_std: float = 
     return local_std
 
 def compute_local_change(signal: np.ndarray, pre_window_samples: int, post_window_samples: int) -> np.ndarray:
+
+    signal = np.asarray(signal, dtype=np.float32)
     n = len(signal)
     local_change = np.zeros(n, dtype=np.float32)
 
@@ -202,6 +264,8 @@ def compute_future_net_rise(signal: np.ndarray, future_samples: int,) -> np.ndar
     return out
 
 def compute_future_net_drop(signal: np.ndarray, future_samples: int,) -> np.ndarray:
+
+    signal = np.asarray(signal, dtype=np.float32)
     n = len(signal)
     out = np.zeros(n, dtype=np.float32)
 
@@ -215,7 +279,6 @@ def compute_future_net_drop(signal: np.ndarray, future_samples: int,) -> np.ndar
             out[i] = float(signal[i] - np.min(future_window))
 
     return out
-    
 
 def compute_change_strength(local_change: np.ndarray, local_std: np.ndarray, min_std: float = 1e-12) -> np.ndarray:
     safe_std = np.maximum(local_std, min_std)
@@ -232,11 +295,12 @@ def compute_change_candidates(
 ) -> np.ndarray:
     
     is_rise = local_change > 0
-    is_drop = local_change < 0
-
     future_confirm = np.where(is_rise, future_net_rise, future_net_drop)
 
     return(change_strength >= min_change_multiplier) & (np.abs(local_change) >= min_absolute_change) & (future_confirm >= min_future_net_change)
+
+
+# ----------- Regional helpers --------------- #
 
 def build_regions_with_stats(mask: np.ndarray, strength_signal: np.ndarray) -> list [PRPRegion]:
     regions: list[PRPRegion] = []
@@ -319,16 +383,13 @@ def build_prp_result(selected_regions: PRPRegion | None) -> PRPResult:
         reason=" Select midpoint of earliest strong candidate region",
     )
 
-def detect_prp(signal: np.ndarray, config: PRPConfig) -> PRPResult:
-    signal = np.asarray(signal, dtype=np.float32)
+# -------- PRP detection ------ #
 
-    if signal.ndim != 1:
-        raise ValueError("detect prp excepts 1D signal")
-    
-    if len(signal) == 0:
-        raise ValueError("detect prp expects a non empty signal")
+def detect_prp(signal: np.ndarray, config: PRPConfig, shared: SharedSignalFeatures | None = None) -> PRPResult:
+    x = validate_signal_1d(signal)
 
-    smoothed = smooth_signal(signal, config)
+    shared_features = shared or compute_shared_features(x, config.samplerate)
+    smoothed = shared_features.smooth_15
 
     local_std = compute_local_std(
         smoothed, 
@@ -387,74 +448,28 @@ def strength_signal(future_drop: np.ndarray, local_std: np.ndarray, min_std: flo
     safe_std = np.maximum(local_std, min_std)
     return future_drop / safe_std
     
-# boolean array catching real drops, possible PRP's
-def compute_drop_candidates(
-        strength_signal: np.ndarray, 
-        future_drop: np.ndarray,  
-        min_drop_multiplier: float, 
-        min_absolute_drop: float,
-        ) -> np.ndarray:
-    
-    return (
-        (strength_signal >= min_drop_multiplier) & (future_drop >= min_absolute_drop))
-
-
-def find_active_window(
-    signal: np.ndarray,
-    samplerate: int,
-    smooth_n: int,
-    active_window_ms: float,
-) -> tuple[int, int]:
-    x_smooth = moving_avg(signal, smooth_n)
-    d1 = np.gradient(x_smooth)
-    activity = np.abs(d1)
-
-    edge_guard = max(5, smooth_n * 2)
-    if activity.size > 2 * edge_guard:
-        trimmed_activity = activity[edge_guard:-edge_guard]
-        peak = int(np.argmax(trimmed_activity)) + edge_guard
-    else:
-        peak = int(np.argmax(activity))
-
-    pad = ms_to_samples(active_window_ms, samplerate)
-    start = max(0, peak - pad)
-    end = min(signal.size, peak + pad)
-    return start, end
+# ------ BP Detection ------ #
 
 def detect_bp(
     signal: np.ndarray,
     samplerate: int,
     prp_index: int | None,
     config: BPConfig | None = None,
+    shared: SharedSignalFeatures | None = None,
 ) -> BPResult:
     cfg = config or BPConfig()
+    x = validate_signal_1d(signal)
 
-    if signal.ndim != 1:
-        raise ValueError("Signal must be 1D")
-
-    if signal.size == 0:
-        return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="empty signal")
-
-    if samplerate <= 0:
-        raise ValueError("samplerate must be above 0")
-    
     if prp_index is None:
         return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="missing prp")
 
-    x = np.asarray(signal, dtype=np.float32)
+    shared_features = shared or compute_shared_features(x, samplerate)
 
-    if not np.isfinite(x).all():
-        return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="non-finite signal")
+    abs_d1 = shared_features.abs_d1
+    abs_d2 = shared_features.abs_d2
 
-    smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
     offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
     local_window_n = ms_to_samples(cfg.local_window_ms, samplerate)
-
-    x_smooth = moving_avg(x, smooth_n)
-    d1 = np.gradient(x_smooth)
-    d2 = np.gradient(d1)
-    abs_d1 = np.abs(d1)
-    abs_d2 = np.abs(d2)
 
     search_end = min(int(round(x.size * cfg.search_end_ratio)), x.size)
     primary_start = max(cfg.min_index, prp_index + offset_n)
@@ -501,6 +516,7 @@ def detect_bp(
 
         selected_region: PRPRegion | None = None
         fallback_region: PRPRegion | None = None
+
         for region in regions:
             if fallback_region is None:
                 fallback_region = region
@@ -525,7 +541,11 @@ def detect_bp(
 
         bp_index: int | None = None
         point_search_start = region_start + max(1, (region_end - region_start) // 4)
-        for i in range(point_search_start, region_end):
+
+        upper_bound = min(region_end, len(abs_d2) - 2)
+        lower_bound = max(point_search_start, 1)
+
+        for i in range(lower_bound, upper_bound + 1):
             value = float(abs_d2[i])
             if value < kink_threshold:
                 continue
@@ -556,20 +576,17 @@ def detect_bp(
     return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="no bp found")
 
 
+# -------- SP Detection ------- # 
+
 def detect_sp(
     signal: np.ndarray,
     samplerate: int,
     prp_index: int | None,
     config: SPConfig | None = None,
-    
+    shared: SharedSignalFeatures | None = None,
 ) -> SPResult:
     cfg = config or SPConfig()
-
-    if signal.ndim != 1:
-        raise ValueError("Signal must be 1D")
-
-    if signal.size == 0:
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="empty signal")
+    x = validate_signal_1d(signal)
 
     if samplerate <= 0:
         raise ValueError("samplerate must be above 0")
@@ -577,25 +594,24 @@ def detect_sp(
     if prp_index is None:
         return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="missing prp")
 
-    x = np.asarray(signal, dtype=np.float32)
+    shared_features = shared or compute_shared_features(x, samplerate)
 
-    if not np.isfinite(x).all():
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="non-finite signal")
+    x_smooth = shared_features.smooth_10
+    d1 = shared_features.d1_10
+    d2 = shared_features.d2_10
+    motion = shared_features.abs_d1
+
 
     smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
     plateau_window_n = min(
         ms_to_samples(cfg.final_plateau_window_ms, samplerate),
-        max(20, signal.size // 4),
+        max(20, x.size // 4),
     )
 
-    x_smooth = moving_avg(x, smooth_n)
-    d1 = np.gradient(x_smooth)
-    d2 = np.gradient(d1)
-    motion = np.abs(d1)
     edge_guard = max(5, smooth_n * 2)
 
     if motion.size > 2 * edge_guard:
-        trimmed_motion = motion[edge_guard: signal.size - edge_guard]
+        trimmed_motion = motion[edge_guard: x.size - edge_guard]
     else:
         trimmed_motion = motion
 
@@ -607,6 +623,7 @@ def detect_sp(
 
     plateau_start: int | None = None
     last_search_start = max(edge_guard, signal.size - plateau_window_n - edge_guard)
+
     for i in range(last_search_start, edge_guard - 1, -1):
         window_motion = motion[i:i + plateau_window_n]
         if window_motion.size < plateau_window_n:
@@ -624,6 +641,7 @@ def detect_sp(
     total_search_width = search_end - base_search_start
     late_search_start = search_end - int(round(total_search_width * cfg.late_search_ratio))
     search_start = max(base_search_start, late_search_start)
+
     if search_end <= search_start + 3:
         return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no pre-plateau region")
 
@@ -643,6 +661,7 @@ def detect_sp(
 
         selected_accel_region: PRPRegion | None = None
         fallback_accel_region: PRPRegion | None = None
+
         for region in accel_regions:
             if fallback_accel_region is None:
                 fallback_accel_region = region
@@ -705,6 +724,7 @@ def detect_sp(
 
     selected_region: PRPRegion | None = None
     fallback_region: PRPRegion | None = None
+
     for region in reversed_regions:
         if region.peak_strength >= cfg.min_change_multiplier:
             if fallback_region is None:
@@ -737,21 +757,10 @@ def detect_sp(
         reason="Select midpoint of latest strong candidate region before plateau",
     )
     
-    # Gaussian bump to get a soft location target (trying to start with a "general" location for PRP)
-def gaussian(n_samples: int, center: int, samplerate: int, sigma_ms: float) -> np.ndarray:
-    if n_samples <= 0:
-        raise ValueError("n_samples must be more than 0")
-    
-    if center < 0 or center >= n_samples:
-        raise ValueError("center is out of bounds")
-    
-    sigma_samples = max((sigma_ms / 1000.0) * samplerate, 1.0)
 
-    idx = np.arange(n_samples, dtype = np.float32)
-    bump = np.exp(-0.5 * ((idx - float(center)) / float(sigma_samples)) ** 2)
-    return bump.astype(np.float32)
+# ------------ Target builders --------- #
 
-    # if PRP is found, PRP will be the center of the gaussian bump
+# if PRP is found, PRP will be the center of the gaussian bump
 def build_prp_target(
     n_samples: int,
     prp_index: int | None,
