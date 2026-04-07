@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
 import numpy as np
 
 @dataclass (frozen = True)
@@ -206,6 +207,39 @@ def compute_shared_features(signal: np.ndarray | list[float], samplerate: int) -
 def smooth_signal(signal: np.ndarray, config: PRPConfig) -> np.ndarray:
     return moving_avg(signal.astype(np.float32), config.smooth_samples)
 
+def sliding_window(signal: np.ndarray, window_size: int, mode: str) -> np.ndarray:
+    x = np.asarray(signal, dtype=np.float32)
+    n = x.size
+
+    if window_size <= 0:
+        raise ValueError("window size must be above 0")
+    
+    if mode not in ("max", "min"):
+        raise ValueError("mode must be 'max' or 'min' ")
+    
+    out = np.empty(n, dtype=np.float32)
+    dq: deque[int] = deque()
+
+    def is_better(new_idx: int, old_idx: int) -> bool:
+        if mode =="max":
+            return x[new_idx] >= x[old_idx]
+        return x[new_idx] <= x[old_idx]
+    
+    for i in range(n):
+        window_start = 1 - window_size + 1
+
+        while dq and dq[0] < window_start:
+            dq.popleft()
+
+        while dq and is_better(i, dq[-1]):
+            dq.pop()
+
+        dq.append(i)
+        out[i] = x[dq[0]]
+    
+    return out
+
+
 def compute_local_std(signal: np.ndarray, window_samples: int, min_std: float = 1e-12) -> np.ndarray:
 
     x = np.asarray(signal, dtype=np.float32)
@@ -279,36 +313,41 @@ def compute_local_change(signal: np.ndarray, pre_window_samples: int, post_windo
     return local_change
 
 def compute_future_net_rise(signal: np.ndarray, future_samples: int,) -> np.ndarray:
-    n = len(signal)
-    out = np.zeros(n, dtype=np.float32)
+    x = np.asarray(signal, dtype=np.float32)
+    n = x.size
 
-    for i in range(n):
-        stop = min(n, i + future_samples + 1)
-        future_window = signal[i:stop]
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+    
+    if future_samples < 0:
+        raise ValueError("future samples be >= 0")
+    
+    window_size = future_samples + 1
 
-        if len(future_window) == 0:
-            out[i] = 0.0
-        else:
-            out[i] = float(np.max(future_window) - signal[i])
+    x_rev = x[::-1].copy()
+    future_max_rev = sliding_window(x_rev, window_size=window_size, mode="max")
+    future_max = future_max_rev[::-1]
 
-    return out
+    return (future_max - x).astype(np.float32)
 
 def compute_future_net_drop(signal: np.ndarray, future_samples: int,) -> np.ndarray:
+    x = np.asarray(signal, dtype=np.float32)
+    n = x.size
 
-    signal = np.asarray(signal, dtype=np.float32)
-    n = len(signal)
-    out = np.zeros(n, dtype=np.float32)
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+    
+    if future_samples < 0:
+        raise ValueError("future samples must be >= 0")
+    
+    window_size = future_samples + 1
 
-    for i in range(n):
-        stop = min(n, i + future_samples + 1)
-        future_window = signal[i:stop]
+    x_rev = x[::-1].copy()
+    future_min_rev = sliding_window(x_rev, window_size=window_size, mode="min")
+    future_min = future_min_rev[::-1]
 
-        if len(future_window) == 0:
-            out[i] = 0.0
-        else:
-            out[i] = float(signal[i] - np.min(future_window))
-
-    return out
+    return (x - future_min).astype(np.float32)
+    
 
 def compute_change_strength(local_change: np.ndarray, local_std: np.ndarray, min_std: float = 1e-12) -> np.ndarray:
     safe_std = np.maximum(local_std, min_std)
