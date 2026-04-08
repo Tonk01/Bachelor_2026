@@ -59,6 +59,8 @@ def train_one_epoch(
 
     progress_bar = tqdm(loader, desc="Training", leave=False)
     for step, batch in enumerate(progress_bar, start=1):
+        if batch is None:
+            continue
 
         batch = move_batch_to_device(batch, device)
 
@@ -104,6 +106,8 @@ def validate_one_epoch(
 
     progress_bar = tqdm(loader, desc="Validation", leave=False)
     for batch in progress_bar:
+        if batch is None:
+            continue
 
         batch = move_batch_to_device(batch, device)
 
