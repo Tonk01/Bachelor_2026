@@ -17,6 +17,13 @@ class Event:
     duration_sec: float
     path: str
 
+@dataclass
+class EventMetaData:
+    path: str
+    samplerate: int
+    n_samples: int
+    duration_sec: int
+
 
 SAMPLERATE_PATTERN = re.compile(r'"samplerate"\s*:\s*(\d+)')
 
@@ -41,6 +48,37 @@ def peek_event_samplerate(path: Path, max_lines: int = 64) -> int | None:
         return None
 
     return None
+
+def peak_event_metadata(path: Path) -> EventMetaData | None:
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+
+            samplerate = int(data["samplerate"])
+            eventdata = data["eventdata"]
+
+            if samplerate <= 0:
+                return None
+            
+            if not isinstance(eventdata, list):
+                return None
+            
+            n_samples = len(eventdata)
+
+            if n_samples == 0:
+                return None
+            
+            duration_sec = n_samples / samplerate
+
+            return EventMetaData(
+                path=str(path),
+                samplerate=samplerate,
+                n_samples=n_samples,
+                duration_sec=duration_sec,
+            )
+        
+    except Exception:
+        return None
 
 def load_event(path: Path) -> Event:
     with open(path, "r", encoding="utf-8") as f:

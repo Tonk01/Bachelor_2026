@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from src.data.collate import valve_collate
 from src.models.CNN_model import ValveEventCNN
+from src.data.sampler import BucketBatchSampler
 from src.train.loss import MaskedBCELoss
 
 @dataclass
@@ -34,6 +35,22 @@ def build_dataloader(
     shuffle: bool,
     workers: int,
 ) -> DataLoader:
+    
+    if hasattr(dataset, "estimated_lengths"):
+        batch_sampler = BucketBatchSampler(
+            lengths=dataset.estimated_lengths,
+            batch_size=batch_size,
+            drop_last=False,
+            shuffle=shuffle
+        )
+
+        return DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=valve_collate,
+            pin_memory=torch.cuda.is_available(),
+            num_workers=workers,
+        )
     
     return DataLoader(
         dataset,

@@ -11,16 +11,37 @@ from torch.utils.data import Dataset
 
 import time
 
-from .data_loader import load_event, find_event_files
+from .data_loader import load_event, find_event_files, peak_event_metadata
 from .preprocess import EventProcessor, PreprocessingConfig
 
 class ValveDataset(Dataset):
     def __init__(self, *event_roots: str | Path, preprocessor: EventProcessor | None = None, target_builder: Callable) -> None:
         self.preprocessor = preprocessor or EventProcessor(PreprocessingConfig())
         self.target_builder = target_builder
-        self.file_paths = find_event_files(*event_roots)
+        
+        all_file_paths = find_event_files(*event_roots)
+
+        self.file_paths: list[Path] = []
+        self.estimated_durations: list[float] = []
+        self.estimated_lengths: list[int] = []
+
         self.skipped_samplerates: Counter[int] = Counter()
         self.other_load_errors = 0
+
+        for i, path in enumerate(all_file_paths, start=1):
+            if i % 100 == 0:
+                print(f"Scanned {i}/{len(all_file_paths)} files")
+
+            metadata = peak_event_metadata(path)
+
+            if metadata is None:
+                continue
+
+            self.file_paths.append(path)
+            self.estimated_durations.append(metadata.duration_sec)
+            self.estimated_lengths.append(max(1, int(round(metadata.duration_sec * 400))))
+
+
 
     def __len__(self) -> int:
         return len(self.file_paths)
