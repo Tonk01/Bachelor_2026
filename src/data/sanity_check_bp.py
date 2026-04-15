@@ -98,13 +98,13 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "BP i
             alpha=0.8,
             label="raw pressure",
         )
-        ax.plot(
-            time_axis[current_slice],
-            x_smooth[current_slice],
-            color="tab:orange",
-            linewidth=2.0,
-            label="smooth pressure",
-        )
+        #ax.plot(
+            #time_axis[current_slice],
+            #x_smooth[current_slice],
+            #color="tab:orange",
+            #linewidth=2.0,
+            #label="smooth pressure",
+        #)
 
         if bp_result.start_index is not None and bp_result.end_index is not None:
             ax.axvline(
@@ -139,8 +139,10 @@ def inspect_signal(signal: np.ndarray, samplerate: int = 400, title: str = "BP i
 def main() -> None:
     candidate_paths = [
         Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
-        #Path("src/data/raw/raw1/JSDP/events/JSDP_493.json"),
-        Path("src/data/raw/raw1/AHA/events/AHA_228.json"),
+        #Path("src/data/raw/JSDP/events/JSDP_493.json"),
+        #Path("src/data/raw/AHA/events/AHA_228.json"),
+        #Path("src\\data\\raw\\AHA\\events\\AHA_18682.json"),
+        Path("src/data/raw/JSDP/events/JSDP_315000.json")
     ]
 
     path = next((candidate for candidate in candidate_paths if candidate.exists()), None)

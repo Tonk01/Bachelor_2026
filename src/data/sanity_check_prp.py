@@ -10,8 +10,8 @@ from src.data.preprocess import EventProcessor, PreprocessingConfig
 from src.data.targets import detect_prp, moving_avg, PRPConfig
 
 DEFAULT_ROOTS = [
-    Path("src/data/raw/raw1"),
-    Path("src/data/raw/raw2"),
+    Path("src/data/raw"),
+    Path("src/data/raw"),
     Path("/mnt/d/Bachelor_data/data/raw_1sensor"),
 ]
 
@@ -32,7 +32,7 @@ def inspect_signal(signal: np.ndarray, samplerate: int, config: PRPConfig | None
 
     plt.figure(figsize=(14, 5))
     plt.plot(time_axis, signal, label="resampled pressure", alpha=0.6)
-    plt.plot(time_axis, x_smooth, label="smooth pressure", linewidth=2)
+    #plt.plot(time_axis, x_smooth, label="smooth pressure", linewidth=2)
 
     if result.start_index is not None and result.end_index is not None:
         plt.axvspan(
@@ -59,9 +59,10 @@ def inspect_signal(signal: np.ndarray, samplerate: int, config: PRPConfig | None
 def main() -> None:
     candidate_paths = [
         Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
-        Path("src/data/raw/raw1/JSDP/events/JSDP_493.json"),
-        #Path("src/data/raw/raw1/AHA/events/AHA_228.json"),
-        #Path("src\\data\\raw\\raw1\\AHA\\events\\AHA_18682.json"),
+        Path("src/data/raw/JSDP/events/JSDP_542.json"),
+        #Path("src/data/raw/AHA/events/AHA_228.json"),
+        #Path("src\\data\\raw\\AHA\\events\\AHA_18682.json"),
+        #Path("src/data/raw/JSDP/events/JSDP_315000.json")
     ]
 
     path = next((candidate for candidate in candidate_paths if candidate.exists()), None)

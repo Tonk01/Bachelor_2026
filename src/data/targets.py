@@ -93,7 +93,7 @@ class SPConfig:
     min_peak_motion: float = 1e-6
     final_plateau_window_ms: float = 800.0
     acceleration_sigma_mult: float = 2.0
-    late_search_ratio: float = 0.35
+    late_search_ratio: float = 0.6
     pre_window_ms: float = 40.0
     post_window_ms: float = 40.0
     noise_window_ms: float = 40.0
@@ -226,7 +226,7 @@ def sliding_window(signal: np.ndarray, window_size: int, mode: str) -> np.ndarra
         return x[new_idx] <= x[old_idx]
     
     for i in range(n):
-        window_start = 1 - window_size + 1
+        window_start = i - window_size + 1
 
         while dq and dq[0] < window_start:
             dq.popleft()
@@ -659,173 +659,144 @@ def detect_sp(
 
     if samplerate <= 0:
         raise ValueError("samplerate must be above 0")
-    
+
     if prp_index is None:
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="missing prp")
+        return SPResult(
+            start_index=None,
+            end_index=None,
+            sp_index=None,
+            confidence=0.0,
+            reason="missing prp",
+        )
 
     shared_features = shared or compute_shared_features(x, samplerate)
 
-    x_smooth = shared_features.smooth_10
     d1 = shared_features.d1_10
-    d2 = shared_features.d2_10
     motion = shared_features.abs_d1
 
-
     smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
-    plateau_window_n = min(
-        ms_to_samples(cfg.final_plateau_window_ms, samplerate),
-        max(20, x.size // 4),
-    )
-
     edge_guard = max(5, smooth_n * 2)
 
     if motion.size > 2 * edge_guard:
-        trimmed_motion = motion[edge_guard: x.size - edge_guard]
+        trimmed_motion = motion[edge_guard:x.size - edge_guard]
     else:
         trimmed_motion = motion
 
     peak_motion = float(np.max(trimmed_motion))
     if peak_motion < cfg.min_peak_motion:
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no significant motion")
+        return SPResult(
+            start_index=None,
+            end_index=None,
+            sp_index=None,
+            confidence=0.0,
+            reason="no significant motion",
+        )
 
-    settle_threshold = cfg.settle_threshold_ratio * peak_motion
+    search_start = max(edge_guard, prp_index + 1)
+    search_end = min(x.size - 1, int(round(0.995 * x.size)))
 
-    plateau_start: int | None = None
-    last_search_start = max(edge_guard, signal.size - plateau_window_n - edge_guard)
+    if search_end <= search_start + 5:
+        return SPResult(
+            start_index=None,
+            end_index=None,
+            sp_index=None,
+            confidence=0.0,
+            reason="no valid sp search window",
+        )
 
-    for i in range(last_search_start, edge_guard - 1, -1):
-        window_motion = motion[i:i + plateau_window_n]
-        if window_motion.size < plateau_window_n:
+    searched_d1 = d1[search_start:search_end]
+    if searched_d1.size < 5:
+        return SPResult(
+            start_index=None,
+            end_index=None,
+            sp_index=None,
+            confidence=0.0,
+            reason="empty sp window",
+        )
+    
+    search_drop_d1 = -searched_d1
+
+    baseline_n = max(5, min(len(search_drop_d1) // 4, ms_to_samples(200.0, samplerate)))
+    baseline_start = max(0, len(search_drop_d1) // 3)
+    baseline_end = min(len(search_drop_d1), baseline_start + baseline_n)
+    baseline = search_drop_d1[baseline_start:baseline_end]
+
+    if baseline.size < 5:
+        baseline = search_drop_d1[:max(5, min(len(search_drop_d1), baseline_n))]
+
+    d1_threshold = float(np.mean(baseline) + 0.4 * safe_std(baseline))
+    d1_threshold = max(d1_threshold, 0.05 * float(np.max(search_drop_d1)))
+
+    candidate_strength = (
+        search_drop_d1 / (float(np.max(search_drop_d1)) + 1e-8)
+    ).astype(np.float32)
+
+    end_guard_local = min(ms_to_samples(20.0, samplerate), max(0, len(search_drop_d1) // 4))
+    max_local_index = len(search_drop_d1) - 1 - end_guard_local
+
+    if max_local_index < 2:
+        max_local_index = len(search_drop_d1) - 1
+
+    sustain_n = max(3, ms_to_samples(20.0, samplerate))
+    peak_local_index: int | None = None
+
+    for i in range(max_local_index, 1, -1):
+        if search_drop_d1[i] < d1_threshold:
             continue
-        if float(np.max(window_motion)) <= settle_threshold:
-            plateau_start = i
-        elif plateau_start is not None:
-            break
+        if search_drop_d1[i] < search_drop_d1[i - 1]:
+            continue
 
-    if plateau_start is None:
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no final plateau found")
+        if i + 1 < len(search_drop_d1) and search_drop_d1[i] < search_drop_d1[i + 1]:
+            continue
 
-    base_search_start = max(edge_guard, prp_index + 1)
-    search_end = plateau_start
-    total_search_width = search_end - base_search_start
-    late_search_start = search_end - int(round(total_search_width * cfg.late_search_ratio))
-    search_start = max(base_search_start, late_search_start)
+        local_end = min(len(search_drop_d1), i + sustain_n)
+        sustain_window = search_drop_d1[i:local_end]
 
-    if search_end <= search_start + 3:
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no pre-plateau region")
+        if sustain_window.size < max(3, sustain_n // 2):
+            continue
 
-    signed_accel = d2[search_start:search_end]
-    if signed_accel.size > 0:
-        overall_direction = float(x_smooth[plateau_start] - x_smooth[prp_index])
-        direction_sign = 1.0 if overall_direction >= 0.0 else -1.0
-        directional_accel = signed_accel * direction_sign
+        if float(np.mean(sustain_window)) < 0.35 * float(search_drop_d1[i]):
+            continue
 
-        accel_baseline = directional_accel[:max(5, min(len(directional_accel), ms_to_samples(200.0, samplerate)))]
-        accel_threshold = float(np.mean(accel_baseline) + cfg.acceleration_sigma_mult * safe_std(accel_baseline))
-        accel_threshold = max(accel_threshold, 0.1 * float(np.max(directional_accel)))
+        peak_local_index = i
+        break
 
-        accel_mask = directional_accel >= accel_threshold
-        accel_strength = np.clip(directional_accel / (np.max(directional_accel) + 1e-8), 0.0, None)
-        accel_regions = build_regions_with_stats(accel_mask, accel_strength)
+    if peak_local_index is None:
+        return SPResult(
+            start_index=None,
+            end_index=None,
+            sp_index=None,
+            confidence=0.0,
+            reason="no sustained d1 drop found",
+        )
 
-        selected_accel_region: PRPRegion | None = None
-        fallback_accel_region: PRPRegion | None = None
+    region_threshold = 0.70 * float(search_drop_d1[peak_local_index])
 
-        for region in accel_regions:
-            if fallback_accel_region is None:
-                fallback_accel_region = region
-            if region.width >= cfg.min_region_width:
-                selected_accel_region = region
-                break
+    region_start_local = peak_local_index
+    while (
+        region_start_local > 0
+        and search_drop_d1[region_start_local - 1] >= region_threshold
+    ):
+        region_start_local -= 1
 
-        if selected_accel_region is None:
-            selected_accel_region = fallback_accel_region
+    region_end_local = peak_local_index
+    while (
+        region_end_local + 1 < len(search_drop_d1)
+        and search_drop_d1[region_end_local + 1] >= region_threshold
+    ):
+        region_end_local += 1
 
-        if selected_accel_region is not None:
-            selected_accel_region = tighten_region(
-                region=selected_accel_region,
-                strength_signal=accel_strength,
-                inner_region_ratio=cfg.inner_region_ratio,
-            )
-
-            region_start = search_start + selected_accel_region.start_index
-            region_end = search_start + selected_accel_region.end_index
-            sp_index = region_start
-
-            return SPResult(
-                start_index=region_start,
-                end_index=region_end,
-                sp_index=sp_index,
-                confidence=float(selected_accel_region.peak_strength),
-                reason="Select start of earliest strong acceleration region in late pre-plateau window",
-            )
-
-    search_signal = x_smooth[search_start:search_end]
-    if search_signal.size < 5:
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="empty sp search window")
-
-    # Reverse the pre-plateau segment so the latest strong region before plateau
-    # becomes the earliest strong region in reversed time.
-    reversed_signal = search_signal[::-1].copy()
-
-    pre_window_n = ms_to_samples(cfg.pre_window_ms, samplerate)
-    post_window_n = ms_to_samples(cfg.post_window_ms, samplerate)
-    noise_window_n = ms_to_samples(cfg.noise_window_ms, samplerate)
-    future_confirm_n = ms_to_samples(cfg.future_confirm_ms, samplerate)
-
-    local_std = compute_local_std(reversed_signal, noise_window_n)
-    local_change = compute_local_change(reversed_signal, pre_window_n, post_window_n)
-    change_strength = compute_change_strength(local_change=local_change, local_std=local_std)
-    future_net_rise = compute_future_net_rise(reversed_signal, future_confirm_n)
-    future_net_drop = compute_future_net_drop(reversed_signal, future_confirm_n)
-
-    candidate_mask = compute_change_candidates(
-        local_change=local_change,
-        change_strength=change_strength,
-        future_net_rise=future_net_rise,
-        future_net_drop=future_net_drop,
-        min_change_multiplier=cfg.min_change_multiplier,
-        min_absolute_change=cfg.min_absolute_change,
-        min_future_net_change=cfg.min_future_net_change,
-    )
-
-    reversed_regions = build_regions_with_stats(candidate_mask, change_strength)
-
-    selected_region: PRPRegion | None = None
-    fallback_region: PRPRegion | None = None
-
-    for region in reversed_regions:
-        if region.peak_strength >= cfg.min_change_multiplier:
-            if fallback_region is None:
-                fallback_region = region
-            if region.width >= cfg.min_region_width:
-                selected_region = region
-                break
-
-    if selected_region is None:
-        selected_region = fallback_region
-
-    if selected_region is None:
-        return SPResult(start_index=None, end_index=None, sp_index=None, confidence=0.0, reason="no strong sp region before plateau")
-
-    selected_region = tighten_region(
-        region=selected_region,
-        strength_signal=change_strength,
-        inner_region_ratio=cfg.inner_region_ratio,
-    )
-
-    region_start = search_end - 1 - selected_region.end_index
-    region_end = search_end - 1 - selected_region.start_index
-    sp_index = (region_start + region_end) // 2
+    region_start = search_start + region_start_local
+    region_end = search_start + region_end_local
+    sp_index = search_start + peak_local_index
 
     return SPResult(
         start_index=region_start,
         end_index=region_end,
         sp_index=sp_index,
-        confidence=float(selected_region.peak_strength),
-        reason="Select midpoint of latest strong candidate region before plateau",
+        confidence=float(candidate_strength[peak_local_index]),
+        reason="selected first sustained negative d1 region from end",
     )
-    
 
 # ------------ Target builders --------- #
 
