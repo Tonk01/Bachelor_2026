@@ -45,7 +45,10 @@ def inspect_signal(
     smooth_window = ms_to_samples(sp_cfg.smooth_ms, samplerate, minimum=3)
     x_smooth = moving_avg(signal.astype(np.float32), smooth_window)
     d1 = np.gradient(x_smooth).astype(np.float32)
-    d2 = np.gradient(d1).astype(np.float32)
+
+    global_smooth_window = ms_to_samples(180.0, samplerate, minimum=5)
+    d1_global = moving_avg(d1, global_smooth_window).astype(np.float32)
+
 
     time_axis = np.arange(signal.size, dtype=np.float32) / float(samplerate)
 
@@ -66,13 +69,12 @@ def inspect_signal(
 
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
 
-    # ----- Panel 1: signal -----
+    # ----- Panel 1: raw / resampled signal -----
     if raw_signal is not None and raw_samplerate is not None:
         raw_time_axis = np.arange(raw_signal.size, dtype=np.float32) / float(raw_samplerate)
         axes[0].plot(raw_time_axis, raw_signal, label="raw", alpha=0.35, color="gray")
 
-    axes[0].plot(time_axis, signal, label="resampled", alpha=0.6)
-    #axes[0].plot(time_axis, x_smooth, label="smoothed", linewidth=2)
+    axes[0].plot(time_axis, signal, label="resampled", alpha=0.8)
 
     if prp_result.prp_index is not None:
         axes[0].axvline(
@@ -86,6 +88,7 @@ def inspect_signal(
             sp_result.start_index / float(samplerate),
             sp_result.end_index / float(samplerate),
             alpha=0.2,
+            color="green",
             label=f"SP region [{sp_result.start_index}, {sp_result.end_index}]",
         )
 
@@ -99,16 +102,17 @@ def inspect_signal(
 
     axes[0].set_ylabel("pressure")
     axes[0].legend()
-    axes[0].set_title("Signal and detected region")
+    axes[0].set_title("Raw and resampled signal")
 
-    # ----- Panel 2: first derivative -----
+    # ----- Panel 2: d1 -----
     axes[1].plot(time_axis, d1, label="d1")
-    axes[1].axhline(0.0, linestyle="--", alpha=0.5)
+    axes[1].axhline(0.0, linestyle="--", alpha=0.5, label="zero")
 
     if prp_result.prp_index is not None:
         axes[1].axvline(
             prp_result.prp_index / float(samplerate),
             linestyle="--",
+            label="PRP",
         )
 
     if sp_result.sp_index is not None:
@@ -116,6 +120,7 @@ def inspect_signal(
             sp_result.sp_index / float(samplerate),
             linestyle="--",
             color="green",
+            label="SP",
         )
 
     if sp_result.start_index is not None and sp_result.end_index is not None:
@@ -123,20 +128,28 @@ def inspect_signal(
             sp_result.start_index / float(samplerate),
             sp_result.end_index / float(samplerate),
             alpha=0.2,
+            color="green",
+            label="SP region",
         )
 
     axes[1].set_ylabel("d1")
     axes[1].legend()
     axes[1].set_title("First derivative")
 
-    # ----- Panel 3: second derivative -----
-    axes[2].plot(time_axis, d2, label="d2")
-    axes[2].axhline(0.0, linestyle="--", alpha=0.5)
+    # ----- Panel 3: smoothed global d1 -----
+    axes[2].plot(
+        time_axis,
+        d1_global,
+        label=f"d1 global smoothed ({global_smooth_window} samples)",
+    )
+    axes[2].axhline(0.0, linestyle="--", alpha=0.5, label="zero")
 
     if prp_result.prp_index is not None:
         axes[2].axvline(
             prp_result.prp_index / float(samplerate),
             linestyle="--",
+            color="black",
+            label="PRP",
         )
 
     if sp_result.sp_index is not None:
@@ -144,6 +157,7 @@ def inspect_signal(
             sp_result.sp_index / float(samplerate),
             linestyle="--",
             color="green",
+            label="SP",
         )
 
     if sp_result.start_index is not None and sp_result.end_index is not None:
@@ -151,12 +165,14 @@ def inspect_signal(
             sp_result.start_index / float(samplerate),
             sp_result.end_index / float(samplerate),
             alpha=0.2,
+            color="green",
+            label="SP region",
         )
 
     axes[2].set_xlabel("time (s)")
-    axes[2].set_ylabel("d2")
+    axes[2].set_ylabel("d1 global")
     axes[2].legend()
-    axes[2].set_title("Second derivative")
+    axes[2].set_title("First derivative - global smoothed view")
 
     plt.tight_layout()
     plt.show()
@@ -165,16 +181,24 @@ def inspect_signal(
 def main() -> None:
     candidate_paths = [
         Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
-        #Path("src/data/raw/JSDP/events/JSDP_542.json"),                 # drop
-        #Path("src/data/raw/AHA/events/AHA_228.json"),                   # drop
-        #Path("src\\data\\raw\\AHA\\events\\AHA_18682.json"),            # drop
-        #Path("src/data/raw/JSDP/events/JSDP_315000.json"),              # drop
-        #Path("src/data/raw/GRA/events/GRA_2207.json"),                    # increase
-        #Path("src/data/raw/JSP1/events/JSP1_6233.json"),                # increase
-        #Path("src/data/raw/JSP1/events/JSP1_6647.json"),                # increase
-        
-        #Path("src/data/raw/JSRP/events/JSRP_870.json"),                 # increase
-        #Path("src/data/raw/AHA/events/AHA_699.json"),                   # increase
+
+        # -- drops --
+        #Path("src/data/raw/JSDP/events/JSDP_542.json"),
+        #Path("src/data/raw/AHA/events/AHA_228.json"),
+        #Path("src/data/raw/AHA/events/AHA_18682.json"),
+        #Path("src/data/raw/JSDP/events/JSDP_315000.json"),
+        #Path("src/data/raw/JCB/events/JCB_26848.json"),
+
+
+        # -- increases --
+        #Path("src/data/raw/GRA/events/GRA_2207.json"),
+        #Path("src/data/raw/JSP1/events/JSP1_6233.json"),
+        #Path("src/data/raw/JSP1/events/JSP1_6647.json"),
+        Path("src/data/raw/JSRP/events/JSRP_870.json"),
+        #Path("src/data/raw/AHA/events/AHA_699.json"),
+        #Path("src/data/raw/TROA/events/TROA_6286.json"),
+
+
     ]
 
     path = next((candidate for candidate in candidate_paths if candidate.exists()), None)
@@ -187,33 +211,22 @@ def main() -> None:
 
     processor = EventProcessor(
         PreprocessingConfig(
-            allowed_samplerate=(400, 1000),
+            allowed_samplerate=(200, 400, 800, 1000),
             target_samplerate=400,
             normalize_for_model=False,
         )
     )
 
     processed_event = processor.preprocess_event(event)
-
     signal = processed_event.resampled_signal
 
     prp_cfg = PRPConfig(
         samplerate=processed_event.samplerate,
         smooth_ms=15.0,
-        pre_window_ms=40.0,
-        post_window_ms=40.0,
-        noise_window_ms=40.0,
-        future_confirm_ms=150.0,
-        inner_region_ratio=0.7,
     )
 
     sp_cfg = SPConfig(
         smooth_ms=15.0,
-        pre_window_ms=40.0,
-        post_window_ms=40.0,
-        noise_window_ms=40.0,
-        future_confirm_ms=150.0,
-        inner_region_ratio=0.7,
     )
 
     inspect_signal(

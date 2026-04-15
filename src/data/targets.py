@@ -89,20 +89,7 @@ class BPResult:
 @dataclass(frozen = True)
 class SPConfig:
     smooth_ms: float = 10.0
-    settle_threshold_ratio: float = 0.12
     min_peak_motion: float = 1e-6
-    final_plateau_window_ms: float = 800.0
-    acceleration_sigma_mult: float = 2.0
-    late_search_ratio: float = 0.6
-    pre_window_ms: float = 40.0
-    post_window_ms: float = 40.0
-    noise_window_ms: float = 40.0
-    future_confirm_ms: float = 150.0
-    min_change_multiplier: float = 3.3
-    min_absolute_change: float = 8e-6
-    min_future_net_change: float = 7e-6
-    inner_region_ratio: float = 0.7
-    min_region_width: int = 3
 
 
 @dataclass(frozen = True)
@@ -669,31 +656,21 @@ def detect_sp(
             reason="missing prp",
         )
 
-    shared_features = shared or compute_shared_features(x, samplerate)
+    smooth_n = ms_to_samples(cfg.smooth_ms, samplerate, minimum=3)
+    x_smooth = moving_avg(x.astype(np.float32), smooth_n)
+    d1 = np.gradient(x_smooth).astype(np.float32)
 
-    d1 = shared_features.d1_10
-    motion = shared_features.abs_d1
+    global_smooth_n = ms_to_samples(40.0, samplerate, minimum=5)
+    d1_trend = moving_avg(d1, global_smooth_n).astype(np.float32)
 
-    smooth_n = ms_to_samples(cfg.smooth_ms, samplerate)
-    edge_guard = max(5, smooth_n * 2)
+    deviation = np.abs(d1 - d1_trend).astype(np.float32)
 
-    if motion.size > 2 * edge_guard:
-        trimmed_motion = motion[edge_guard:x.size - edge_guard]
-    else:
-        trimmed_motion = motion
+    n = x.size
+    edge_guard = max(5, global_smooth_n)
 
-    peak_motion = float(np.max(trimmed_motion))
-    if peak_motion < cfg.min_peak_motion:
-        return SPResult(
-            start_index=None,
-            end_index=None,
-            sp_index=None,
-            confidence=0.0,
-            reason="no significant motion",
-        )
-
-    search_start = max(edge_guard, prp_index + 1)
-    search_end = min(x.size - 1, int(round(0.995 * x.size)))
+    search_start = max(prp_index + 1, edge_guard)
+    late_cutoff = int(0.95 * n)
+    search_end = min(late_cutoff, n - edge_guard)
 
     if search_end <= search_start + 5:
         return SPResult(
@@ -704,100 +681,50 @@ def detect_sp(
             reason="no valid sp search window",
         )
 
-    searched_d1 = d1[search_start:search_end]
-    if searched_d1.size < 5:
+    search_dev = deviation[search_start:search_end]
+
+    if search_dev.size == 0:
         return SPResult(
             start_index=None,
             end_index=None,
             sp_index=None,
             confidence=0.0,
-            reason="empty sp window",
+            reason="empty sp deviation window",
         )
-    
-    search_drop_d1 = -searched_d1
 
-    baseline_n = max(5, min(len(search_drop_d1) // 4, ms_to_samples(200.0, samplerate)))
-    baseline_start = max(0, len(search_drop_d1) // 3)
-    baseline_end = min(len(search_drop_d1), baseline_start + baseline_n)
-    baseline = search_drop_d1[baseline_start:baseline_end]
+    dev_max = float(np.max(search_dev))
+    threshold = max(0.05 * dev_max, cfg.min_peak_motion)
 
-    if baseline.size < 5:
-        baseline = search_drop_d1[:max(5, min(len(search_drop_d1), baseline_n))]
+    mask = search_dev > threshold
+    regions = build_regions_with_stats(mask, search_dev)
 
-    d1_threshold = float(np.mean(baseline) + 0.4 * safe_std(baseline))
-    d1_threshold = max(d1_threshold, 0.05 * float(np.max(search_drop_d1)))
-
-    candidate_strength = (
-        search_drop_d1 / (float(np.max(search_drop_d1)) + 1e-8)
-    ).astype(np.float32)
-
-    end_guard_local = min(ms_to_samples(20.0, samplerate), max(0, len(search_drop_d1) // 4))
-    max_local_index = len(search_drop_d1) - 1 - end_guard_local
-
-    if max_local_index < 2:
-        max_local_index = len(search_drop_d1) - 1
-
-    sustain_n = max(3, ms_to_samples(20.0, samplerate))
-    peak_local_index: int | None = None
-
-    for i in range(max_local_index, 1, -1):
-        if search_drop_d1[i] < d1_threshold:
-            continue
-        if search_drop_d1[i] < search_drop_d1[i - 1]:
-            continue
-
-        if i + 1 < len(search_drop_d1) and search_drop_d1[i] < search_drop_d1[i + 1]:
-            continue
-
-        local_end = min(len(search_drop_d1), i + sustain_n)
-        sustain_window = search_drop_d1[i:local_end]
-
-        if sustain_window.size < max(3, sustain_n // 2):
-            continue
-
-        if float(np.mean(sustain_window)) < 0.35 * float(search_drop_d1[i]):
-            continue
-
-        peak_local_index = i
-        break
-
-    if peak_local_index is None:
+    if not regions:
         return SPResult(
             start_index=None,
             end_index=None,
             sp_index=None,
             confidence=0.0,
-            reason="no sustained d1 drop found",
+            reason="no significant sp deviation found",
         )
 
-    region_threshold = 0.70 * float(search_drop_d1[peak_local_index])
+    selected_region = regions[-1]
 
-    region_start_local = peak_local_index
-    while (
-        region_start_local > 0
-        and search_drop_d1[region_start_local - 1] >= region_threshold
-    ):
-        region_start_local -= 1
+    region_start = search_start + selected_region.start_index
+    region_end = search_start + selected_region.end_index
 
-    region_end_local = peak_local_index
-    while (
-        region_end_local + 1 < len(search_drop_d1)
-        and search_drop_d1[region_end_local + 1] >= region_threshold
-    ):
-        region_end_local += 1
+    local_dev = search_dev[selected_region.start_index:selected_region.end_index + 1]
+    peak_offset = int(np.argmax(local_dev))
+    sp_index = region_start + peak_offset
 
-    region_start = search_start + region_start_local
-    region_end = search_start + region_end_local
-    sp_index = search_start + peak_local_index
+    confidence = float(np.clip(selected_region.peak_strength / (dev_max + 1e-8), 0.0, 1.0))
 
     return SPResult(
         start_index=region_start,
         end_index=region_end,
         sp_index=sp_index,
-        confidence=float(candidate_strength[peak_local_index]),
-        reason="selected first sustained negative d1 region from end",
+        confidence=confidence,
+        reason="selected peak of last significant deviation before settling",
     )
-
 # ------------ Target builders --------- #
 
 # if PRP is found, PRP will be the center of the gaussian bump
