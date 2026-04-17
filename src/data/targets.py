@@ -55,6 +55,7 @@ class PRPRegion:
     end_index: int
     peak_strength: float
     mean_strength: float
+    area_strength: float
 
     @property 
     def width(self) -> int:
@@ -90,6 +91,7 @@ class BPResult:
 class SPConfig:
     smooth_ms: float = 10.0
     min_peak_motion: float = 1e-6
+    min_sp_delay_ms: float = 100.0
 
 
 @dataclass(frozen = True)
@@ -140,6 +142,22 @@ def moving_avg(x: np.ndarray, window: int) -> np.ndarray:
     
     padded = np.pad(x, (padd_left, pad_right), mode = "edge")
     kernel = np.ones(window, dtype = np.float32) / float(window)
+
+    return np.convolve(padded, kernel, mode = "valid").astype(np.float32)
+
+def moving_avg_guassian(x: np.ndarray, window: int) -> np.ndarray:
+    if window <= 1:
+        return x.copy()
+    
+    padd_left = window // 2 
+    pad_right = window - 1 - padd_left
+    
+    padded = np.pad(x, (padd_left, pad_right), mode = "edge")
+
+    sigma = max(window / 6.0, 1.0)
+    idx = np.arange(window, dtype=np.float32) - (window - 1) / 2.0
+    kernel = np.exp(-0.5 * (idx / sigma) ** 2)
+    kernel /= np.sum(kernel)
 
     return np.convolve(padded, kernel, mode = "valid").astype(np.float32)
 
@@ -376,6 +394,7 @@ def build_regions_with_stats(mask: np.ndarray, strength_signal: np.ndarray) -> l
                 end_index = end, 
                 peak_strength = float(np.max(region_strength)), 
                 mean_strength = float(np.mean(region_strength)),
+                area_strength = float(np.sum(region_strength)),
                 )
             )
             start = None
@@ -389,6 +408,7 @@ def build_regions_with_stats(mask: np.ndarray, strength_signal: np.ndarray) -> l
                 end_index=end,
                 peak_strength=float(np.max(region_strength)),
                 mean_strength=float(np.mean(region_strength)),
+                area_strength=float(np.sum(region_strength)),
             )
         )
 
@@ -419,6 +439,7 @@ def tighten_region(region: PRPRegion, strength_signal: np.ndarray, inner_region_
         end_index=new_end,
         peak_strength=float(np.max(new_strength)),
         mean_strength=float(np.mean(new_strength)),
+        area_strength=float(np.sum(new_strength)),
     )
 
 def build_prp_result(selected_regions: PRPRegion | None) -> PRPResult:
@@ -668,7 +689,8 @@ def detect_sp(
     n = x.size
     edge_guard = max(5, global_smooth_n)
 
-    search_start = max(prp_index + 1, edge_guard)
+    min_sp_delay = ms_to_samples(cfg.min_sp_delay_ms, samplerate, minimum=1)
+    search_start = max(prp_index + min_sp_delay, edge_guard)
     late_cutoff = int(0.95 * n)
     search_end = min(late_cutoff, n - edge_guard)
 
@@ -707,7 +729,7 @@ def detect_sp(
             reason="no significant sp deviation found",
         )
 
-    selected_region = regions[-1]
+    selected_region = max(regions, key=lambda r: r.area_strength)
 
     region_start = search_start + selected_region.start_index
     region_end = search_start + selected_region.end_index
@@ -716,7 +738,7 @@ def detect_sp(
     peak_offset = int(np.argmax(local_dev))
     sp_index = region_start + peak_offset
 
-    confidence = float(np.clip(selected_region.peak_strength / (dev_max + 1e-8), 0.0, 1.0))
+    confidence = float(np.clip(selected_region.area_strength / (sum(r.area_strength for r in regions) + 1e-8), 0.0, 1.0))
 
     return SPResult(
         start_index=region_start,

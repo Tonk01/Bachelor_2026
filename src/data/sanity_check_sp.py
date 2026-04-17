@@ -183,20 +183,73 @@ def main() -> None:
         Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
 
         # -- drops --
-        #Path("src/data/raw/JSDP/events/JSDP_542.json"),
-        #Path("src/data/raw/AHA/events/AHA_228.json"),
+        #Path("src/data/raw/AHA/events/AHA_3187.json"),
+        #Path("src/data/raw/AHA/events/AHA_4037.json"),
         #Path("src/data/raw/AHA/events/AHA_18682.json"),
-        #Path("src/data/raw/JSDP/events/JSDP_315000.json"),
+
+        #Path("src/data/raw/GFB/events/GFB_303.json"), # GFB has ... strange events, like almost all drops are smooth, very smooth
+        #Path("src/data/raw/GFB/events/GFB_156.json"), # too smooth for drops, incredibly difficult to detect anything.
+                                                       # low amount of samples in GFB, removal could be better. 
+
+        #Path("src/data/raw/GFC/events/GFC_626.json"), # What is GFC?? All noise... Definitely harmful no good samples
+
+        #Path("src/data/raw/GKR/events/GKR_43.json"),
+        #Path("src/data/raw/GKR/events/GKR_821.json"),
+        #Path("src/data/raw/GKR/events/GKR_2169.json"),
+        #Path("src/data/raw/GKR/events/GKR_6465.json"),
+
+        #Path("src/data/raw/GRA/events/GRA_121.json"),
+        #Path("src/data/raw/GRA/events/GRA_308.json"), # look at this closer [similar to JSRP27570 & 94094]
+        #Path("src/data/raw/GRA/events/GRA_702.json"), # look at closer, same as above
+        #Path("src/data/raw/GRA/events/GRA_566.json"),
+        #Path("src/data/raw/GRA/events/GRA_861.json"),
+        
         #Path("src/data/raw/JCB/events/JCB_26848.json"),
+        #Path("src/data/raw/JCB/events/JCB_7354.json"), # curveball??? what is this?
+        #Path("src/data/raw/JCB/events/JCB_11333.json"),
+
+        #Path("src/data/raw/JSDP/events/JSDP_542.json"),
+        #Path("src/data/raw/JSDP/events/JSDP_773.json"),
+        #Path("src/data/raw/JSDP/events/JSDP_1122.json"),
+        #Path("src/data/raw/JSDP/events/JSDP_37954.json"),
+        #Path("src/data/raw/JSDP/events/JSDP_315000.json"),
+
+        #Path("src/data/raw/JSP1/events/JSP1_7788.json"),
+        #Path("src/data/raw/JSP1/events/JSP1_8225.json"),
+        #Path("src/data/raw/JSP1/events/JSP1_9871.json"),
+        #Path("src/data/raw/JSP1/events/JSP1_18000.json"),
+        #Path("src/data/raw/JSP1/events/JSP1_12342.json"),   # interesting case
+
+        #Path("src/data/raw/JSP2/events/JSP2_4996.json"),
+        #Path("src/data/raw/JSP2/events/JSP2_4968.json"),
+        #Path("src/data/raw/JSP2/events/JSP2_34696.json"),   # just plain noise
+        #Path("src/data/raw/JSP2/events/JSP2_39340.json"),
+
+        #Path("src/data/raw/JSRP/events/JSRP_27570.json"), # look at closer
+        #Path("src/data/raw/JSRP/events/JSRP_94094.json"), # look at closer
+        #Path("src/data/raw/JSRP/events/JSRP_303736.json"),
+        #Path("src/data/raw/JSRP/events/JSRP_347251.json"),
+
+        #Path("src/data/raw/OSH/events/OSH_4694.json"),
+        #Path("src/data/raw/OSH/events/OSH_4734.json"),
+        #Path("src/data/raw/OSH/events/OSH_5144.json"),
+        #Path("src/data/raw/OSH/events/OSH_4486.json"), # clear outliner, 10 seconds to reach seat point. valve fault?
+
+        #Path("src/data/raw/OSS/events/OSS_7053.json"), # OSS is . . . challanging. 
+
+        #Path("src/data/raw/TROA/events/TROA_6244.json"), #TROA - can struggle due to noise, has some useful samples
+        #Path("src/data/raw/TROA/events/TROA_6248.json"),
+        #Path("src/data/raw/TROA/events/TROA_6711.json"),
 
 
         # -- increases --
         #Path("src/data/raw/GRA/events/GRA_2207.json"),
         #Path("src/data/raw/JSP1/events/JSP1_6233.json"),
         #Path("src/data/raw/JSP1/events/JSP1_6647.json"),
-        Path("src/data/raw/JSRP/events/JSRP_870.json"),
+        #Path("src/data/raw/JSRP/events/JSRP_870.json"),
         #Path("src/data/raw/AHA/events/AHA_699.json"),
         #Path("src/data/raw/TROA/events/TROA_6286.json"),
+        #Path("src/data/raw/AHA/events/AHA_2970.json"),
 
 
     ]
