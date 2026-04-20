@@ -702,51 +702,107 @@ def detect_sp(
             confidence=0.0,
             reason="no valid sp search window",
         )
+    
+    net_change = float(x_smooth[search_start - 1] - x_smooth[search_start])
+    pressure_decreasing = net_change > 0.0
 
-    search_dev = deviation[search_start:search_end]
+    if pressure_decreasing:
+        print("decreasing")
 
-    if search_dev.size == 0:
+        search_dev = deviation[search_start:search_end]
+
+        if search_dev.size == 0:
+            return SPResult(
+                start_index=None,
+                end_index=None,
+                sp_index=None,
+                confidence=0.0,
+                reason="empty sp deviation window",
+            )
+        
+        dev_max = float(np.max(search_dev))
+        threshold = max(0.05 * dev_max, cfg.min_peak_motion)
+
+        mask = search_dev > threshold
+        regions = build_regions_with_stats(mask, search_dev)
+
+        if not regions:
+            return SPResult(
+                start_index=None,
+                end_index=None,
+                sp_index=None,
+                confidence=0.0,
+                reason="no significant sp deviation found",
+            )
+
+        selected_region = max(regions, key=lambda r: r.area_strength)
+
+        region_start = search_start + selected_region.start_index
+        region_end = search_start + selected_region.end_index
+
+        local_dev = search_dev[selected_region.start_index:selected_region.end_index + 1]
+        peak_offset = int(np.argmax(local_dev))
+        sp_index = region_start + peak_offset
+
+        confidence = float(np.clip(selected_region.area_strength / (sum(r.area_strength for r in regions) + 1e-8), 0.0, 1.0))
+
         return SPResult(
-            start_index=None,
-            end_index=None,
-            sp_index=None,
-            confidence=0.0,
-            reason="empty sp deviation window",
+            start_index=region_start,
+            end_index=region_end,
+            sp_index=sp_index,
+            confidence=confidence,
+            reason="selected peak of last significant deviation before settling",
+        )
+    
+    # increasing pressure logic
+    else:
+        print("increasing")
+        search_dev= d1_trend[search_start:search_end][::-1]
+
+        if search_dev.size == 0:
+            return SPResult(
+                start_index=None,
+                end_index=None,
+                sp_index=None,
+                confidence=0.0,
+                reason="empty sp deviation window",
+            )
+        
+        dev_max = float(np.max(search_dev))
+        threshold = max(0.25 * dev_max, cfg.min_peak_motion)
+        
+        mask = search_dev > threshold
+        regions = build_regions_with_stats(mask, search_dev)
+
+        if not regions:
+            return SPResult(
+                start_index=None,
+                end_index=None,
+                sp_index=None,
+                confidence=0.0,
+                reason="no significant sp deviation found",
+            )
+    
+        selected_region = regions[0]
+
+        region_start = search_start + (search_dev.size - 1 - selected_region.end_index)
+        region_end = search_start + (search_dev.size - 1 - selected_region.start_index)
+
+        local_dev = search_dev[selected_region.start_index:selected_region.end_index + 1]
+        peak_offset = int(np.argmax(local_dev))
+        sp_index = search_start + (search_dev.size - 1 - (selected_region.start_index + peak_offset))
+
+        confidence = float(np.clip(selected_region.area_strength / (sum(r.area_strength for r in regions) + 1e-8), 0.0, 1.0))
+
+        return SPResult(
+            start_index=region_start,
+            end_index=region_end,
+            sp_index=sp_index,
+            confidence=confidence,
+            reason="selected peak of last significant deviation before settling",
         )
 
-    dev_max = float(np.max(search_dev))
-    threshold = max(0.05 * dev_max, cfg.min_peak_motion)
-
-    mask = search_dev > threshold
-    regions = build_regions_with_stats(mask, search_dev)
-
-    if not regions:
-        return SPResult(
-            start_index=None,
-            end_index=None,
-            sp_index=None,
-            confidence=0.0,
-            reason="no significant sp deviation found",
-        )
-
-    selected_region = max(regions, key=lambda r: r.area_strength)
-
-    region_start = search_start + selected_region.start_index
-    region_end = search_start + selected_region.end_index
-
-    local_dev = search_dev[selected_region.start_index:selected_region.end_index + 1]
-    peak_offset = int(np.argmax(local_dev))
-    sp_index = region_start + peak_offset
-
-    confidence = float(np.clip(selected_region.area_strength / (sum(r.area_strength for r in regions) + 1e-8), 0.0, 1.0))
-
-    return SPResult(
-        start_index=region_start,
-        end_index=region_end,
-        sp_index=sp_index,
-        confidence=confidence,
-        reason="selected peak of last significant deviation before settling",
-    )
+        
 # ------------ Target builders --------- #
 
 # if PRP is found, PRP will be the center of the gaussian bump

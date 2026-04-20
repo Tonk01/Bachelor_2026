@@ -248,9 +248,8 @@ def main() -> None:
         #Path("src/data/raw/JSP1/events/JSP1_6647.json"),
         #Path("src/data/raw/JSRP/events/JSRP_870.json"),
         #Path("src/data/raw/AHA/events/AHA_699.json"),
-        #Path("src/data/raw/TROA/events/TROA_6286.json"),
+        Path("src/data/raw/TROA/events/TROA_6286.json"),
         #Path("src/data/raw/AHA/events/AHA_2970.json"),
-
 
     ]
 
