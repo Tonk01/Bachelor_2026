@@ -182,7 +182,7 @@ def main() -> None:
     candidate_paths = [
         Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
 
-        # -- drops --
+        # ---------------------------------------- || drops || ------------------------------------------------------
         #Path("src/data/raw/AHA/events/AHA_3187.json"),
         #Path("src/data/raw/AHA/events/AHA_4037.json"),
         #Path("src/data/raw/AHA/events/AHA_18682.json"),
@@ -242,14 +242,52 @@ def main() -> None:
         #Path("src/data/raw/TROA/events/TROA_6711.json"),
 
 
-        # -- increases --
-        #Path("src/data/raw/GRA/events/GRA_2207.json"),
-        #Path("src/data/raw/JSP1/events/JSP1_6233.json"),
-        #Path("src/data/raw/JSP1/events/JSP1_6647.json"),
-        #Path("src/data/raw/JSRP/events/JSRP_870.json"),
-        #Path("src/data/raw/AHA/events/AHA_699.json"),
-        Path("src/data/raw/TROA/events/TROA_6286.json"),
-        #Path("src/data/raw/AHA/events/AHA_2970.json"),
+        # ---------------------------------------- || increases || ------------------------------------------------------
+        #Path("src/data/raw/AHA/events/AHA_1445.json"),
+        #Path("src/data/raw/AHA/events/AHA_2912.json"), # interesting, very low "bump"
+        #Path("src/data/raw/AHA/events/AHA_5047.json"),
+
+        #Path("src/data/raw/GKR/events/GKR_2168.json"), #Idk
+        #Path("src/data/raw/GKR/events/GKR_6547.json"), #maybe
+        #Path("src/data/raw/GKR/events/GKR_9406.json"), # Ingen data......  ikke den eneste heller, heh. 
+        #Path("src/data/raw/GKR/events/GKR_6465.json"), # GKR på increasing pressure er A##
+
+        #Path("src/data/raw/GRA/events/GRA_41.json"),
+        #Path("src/data/raw/GRA/events/GRA_309.json"), # interesting <-- check more on
+        #Path("src/data/raw/GRA/events/GRA_1184.json"), # look more on
+        #Path("src/data/raw/GRA/events/GRA_1901.json"), # same as above, look at it
+        
+        #Path("src/data/raw/JCB/events/JCB_11377.json"), # look at aswell
+        #Path("src/data/raw/JCB/events/JCB_12198.json"), # look at
+        #Path("src/data/raw/JCB/events/JCB_80553.json"),
+
+        #Path("src/data/raw/JSDP/events/JSDP_693.json"), # interesting case
+        #Path("src/data/raw/JSDP/events/JSDP_3202.json"), # good case
+        #Path("src/data/raw/JSDP/events/JSDP_19843.json"), # noisy sample, decent case to view
+
+        #Path("src/data/raw/JSP1/events/JSP1_6958.json"), # good case, look at
+        #Path("src/data/raw/JSP1/events/JSP1_9636.json"), # flat case, good 
+        #Path("src/data/raw/JSP1/events/JSP1_10054.json"), # good case
+        #Path("src/data/raw/JSP1/events/JSP1_218593.json"), # case case case
+
+        #Path("src/data/raw/JSP2/events/JSP2_4951.json"), # i guess, maybe?
+        #Path("src/data/raw/JSP2/events/JSP2_5108.json"), # +1
+        #Path("src/data/raw/JSP2/events/JSP2_9657.json"), # +1
+        #Path("src/data/raw/JSP2/events/JSP2_10157.json"), # actually correct :O
+
+        #Path("src/data/raw/JSRP/events/JSRP_34479.json"), +1 case
+        #Path("src/data/raw/JSRP/events/JSRP_2256.json"), # actually correct ! 
+        #Path("src/data/raw/JSRP/events/JSRP_122062.json"), # actually correct!
+
+        #Path("src/data/raw/OSH/events/OSH_3489.json"), # +1 case
+        #Path("src/data/raw/OSH/events/OSH_5970.json"), # correct, i guess?
+        #Path("src/data/raw/OSH/events/OSH_6261.json"), # correct, i guess??
+
+        #Path("src/data/raw/OSS/events/OSS_1924.json"), # useless
+
+        #Path("src/data/raw/TROA/events/TROA_7021.json"), # correct, i guess???
+        #Path("src/data/raw/TROA/events/TROA_12310.json"), # correct
+
 
     ]
 

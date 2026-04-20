@@ -769,7 +769,7 @@ def detect_sp(
             )
         
         dev_max = float(np.max(search_dev))
-        threshold = max(0.25 * dev_max, cfg.min_peak_motion)
+        threshold = max(0.015 * dev_max, cfg.min_peak_motion)
         
         mask = search_dev > threshold
         regions = build_regions_with_stats(mask, search_dev)
