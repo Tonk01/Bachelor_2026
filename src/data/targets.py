@@ -756,52 +756,123 @@ def detect_sp(
     
     # increasing pressure logic
     else:
-        print("increasing")
-        search_dev= d1_trend[search_start:search_end][::-1]
+        search_d1 = d1_trend[search_start:search_end]
 
-        if search_dev.size == 0:
+        if search_d1.size < 10:
+            return SPResult(None, None, None, 0.0, "empty sp increasing window")
+
+        # ignore early noise. We know SP is the latest significant event.
+        noise_start = int(0.25 * search_d1.size)
+        noise_part = search_d1[noise_start:] if search_d1.size > 20 else search_d1
+
+        baseline = float(np.median(noise_part))
+        mad = float(np.median(np.abs(noise_part - baseline))) + 1e-12
+
+        late_peak = (
+            float(np.max(search_d1[noise_start:]))
+            if search_d1[noise_start:].size
+            else float(np.max(search_d1))
+        )
+
+        step_n = ms_to_samples(300.0, samplerate, minimum=10)
+        plateau_n = ms_to_samples(700.0, samplerate, minimum=20)
+
+        step_candidates = []
+
+        if search_d1.size > step_n + plateau_n:
+            for i in range(step_n, search_d1.size - plateau_n):
+                before = search_d1[i - step_n:i]
+                after = search_d1[i:i + plateau_n]
+
+                before_level = float(np.median(before))
+                after_level = float(np.median(after))
+
+                step_height = after_level - before_level
+                after_noise = float(np.median(np.abs(after - after_level))) + 1e-12
+
+                min_step_height = max(4.0 * mad, 0.02 * abs(late_peak))
+
+                if step_height > min_step_height:
+                    if after_noise < 0.50 * abs(step_height):
+                        step_candidates.append(i)
+
+        if step_candidates:
+            sp_local = step_candidates[-1]
+            sp_index = search_start + sp_local
+
+            max_region_n = ms_to_samples(500.0, samplerate, minimum=5)
+
+            event_end = min(search_d1.size, sp_local + max_region_n)
+            region = search_d1[sp_local:event_end]
+
+            peak = float(np.max(region))
+            confidence = float(np.clip((peak - baseline) / (0.3 * mad + 1e-8), 0.0, 1.0))
+
             return SPResult(
-                start_index=None,
-                end_index=None,
-                sp_index=None,
-                confidence=0.0,
-                reason="empty sp deviation window",
+                start_index=sp_index,
+                end_index=min(search_end - 1, sp_index + max_region_n),
+                sp_index=sp_index,
+                confidence=confidence,
+                reason="selected rightmost positive step into stable plateau",
             )
-        
-        dev_max = float(np.max(search_dev))
-        threshold = max(0.015 * dev_max, cfg.min_peak_motion)
-        
-        mask = search_dev > threshold
-        regions = build_regions_with_stats(mask, search_dev)
+
+        # bump & hump catcher
+        threshold = baseline + 5.0 * mad
+
+        mask = search_d1 > threshold
+        regions = build_regions_with_stats(mask, search_d1)
 
         if not regions:
-            return SPResult(
-                start_index=None,
-                end_index=None,
-                sp_index=None,
-                confidence=0.0,
-                reason="no significant sp deviation found",
-            )
-    
-        selected_region = regions[0]
+            return SPResult(None, None, None, 0.0, "no positive sp bumps found")
 
-        region_start = search_start + (search_dev.size - 1 - selected_region.end_index)
-        region_end = search_start + (search_dev.size - 1 - selected_region.start_index)
+        min_width = ms_to_samples(10.0, samplerate, minimum=1)
+        min_height = max(baseline + 4.0 * mad, 0.08 * abs(late_peak))
 
-        local_dev = search_dev[selected_region.start_index:selected_region.end_index + 1]
-        peak_offset = int(np.argmax(local_dev))
-        sp_index = search_start + (search_dev.size - 1 - (selected_region.start_index + peak_offset))
+        min_area = min_height * min_width
 
-        confidence = float(np.clip(selected_region.area_strength / (sum(r.area_strength for r in regions) + 1e-8), 0.0, 1.0))
+        valid_regions = []
+
+        for r in regions:
+            width = r.end_index - r.start_index + 1
+            region = search_d1[r.start_index:r.end_index + 1]
+
+            peak = float(np.max(region))
+            area = float(np.sum(np.maximum(region - baseline, 0.0)))
+
+            if width < min_width:
+                continue
+
+            if peak < min_height:
+                continue
+
+            if area < min_area:
+                continue
+
+            valid_regions.append(r)
+
+        if not valid_regions:
+            return SPResult(None, None, None, 0.0, "no valid positive sp bumps found")
+
+        selected_region = valid_regions[-1]
+        region_start = search_start + selected_region.start_index
+
+        region = search_d1[selected_region.start_index:selected_region.end_index + 1]
+        peak = float(np.max(region))
+
+        confidence = float(np.clip((peak - baseline) / (0.3 * mad + 1e-8), 0.0, 1.0))
+
+        max_region_n = ms_to_samples(250.0, samplerate, minimum=5)
+        region_end = min(search_start + selected_region.end_index, region_start + max_region_n, search_end - 1)
+
+        sp_index = region_start
 
         return SPResult(
             start_index=region_start,
             end_index=region_end,
             sp_index=sp_index,
             confidence=confidence,
-            reason="selected peak of last significant deviation before settling",
+            reason="selected rightmost significant positive bump",
         )
-
         
 # ------------ Target builders --------- #
 

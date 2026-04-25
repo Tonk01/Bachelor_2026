@@ -221,8 +221,6 @@ def main() -> None:
 
     _set_seed(seed)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
     print("Valve Event Detection")
     print("Project root:", PROJECT_ROOT)
 

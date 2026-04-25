@@ -183,7 +183,7 @@ def main() -> None:
         Path("/mnt/d/Bachelor_data/data/raw_1sensor/AHA/events/AHA_17174.json"),
 
         # ---------------------------------------- || drops || ------------------------------------------------------
-        #Path("src/data/raw/AHA/events/AHA_3187.json"),
+        #Path("src/data/raw/AHA/events/AHA_228.json"),
         #Path("src/data/raw/AHA/events/AHA_4037.json"),
         #Path("src/data/raw/AHA/events/AHA_18682.json"),
 
@@ -191,7 +191,7 @@ def main() -> None:
         #Path("src/data/raw/GFB/events/GFB_156.json"), # too smooth for drops, incredibly difficult to detect anything.
                                                        # low amount of samples in GFB, removal could be better. 
 
-        #Path("src/data/raw/GFC/events/GFC_626.json"), # What is GFC?? All noise... Definitely harmful no good samples
+        #Path("src/data/raw/GFC/events/GFC_382.json"), # What is GFC?? All noise... Definitely harmful no good samples
 
         #Path("src/data/raw/GKR/events/GKR_43.json"),
         #Path("src/data/raw/GKR/events/GKR_821.json"),
@@ -208,7 +208,7 @@ def main() -> None:
         #Path("src/data/raw/JCB/events/JCB_7354.json"), # curveball??? what is this?
         #Path("src/data/raw/JCB/events/JCB_11333.json"),
 
-        #Path("src/data/raw/JSDP/events/JSDP_542.json"),
+        #Path("src/data/raw/JSDP/events/JSDP_542.json"), # +
         #Path("src/data/raw/JSDP/events/JSDP_773.json"),
         #Path("src/data/raw/JSDP/events/JSDP_1122.json"),
         #Path("src/data/raw/JSDP/events/JSDP_37954.json"),
@@ -217,11 +217,11 @@ def main() -> None:
         #Path("src/data/raw/JSP1/events/JSP1_7788.json"),
         #Path("src/data/raw/JSP1/events/JSP1_8225.json"),
         #Path("src/data/raw/JSP1/events/JSP1_9871.json"),
-        #Path("src/data/raw/JSP1/events/JSP1_18000.json"),
+        #Path("src/data/raw/JSP1/events/JSP1_18000.json"), #
         #Path("src/data/raw/JSP1/events/JSP1_12342.json"),   # interesting case
 
         #Path("src/data/raw/JSP2/events/JSP2_4996.json"),
-        #Path("src/data/raw/JSP2/events/JSP2_4968.json"),
+        #Path("src/data/raw/JSP2/events/JSP2_4968.json"), # bruk som FIGUR eksempel i rapport!
         #Path("src/data/raw/JSP2/events/JSP2_34696.json"),   # just plain noise
         #Path("src/data/raw/JSP2/events/JSP2_39340.json"),
 
@@ -236,6 +236,7 @@ def main() -> None:
         #Path("src/data/raw/OSH/events/OSH_4486.json"), # clear outliner, 10 seconds to reach seat point. valve fault?
 
         #Path("src/data/raw/OSS/events/OSS_7053.json"), # OSS is . . . challanging. 
+        #Path("src/data/raw/OSS/events/OSS_1924.json"), # case
 
         #Path("src/data/raw/TROA/events/TROA_6244.json"), #TROA - can struggle due to noise, has some useful samples
         #Path("src/data/raw/TROA/events/TROA_6248.json"),
@@ -243,50 +244,47 @@ def main() -> None:
 
 
         # ---------------------------------------- || increases || ------------------------------------------------------
-        #Path("src/data/raw/AHA/events/AHA_1445.json"),
-        #Path("src/data/raw/AHA/events/AHA_2912.json"), # interesting, very low "bump"
-        #Path("src/data/raw/AHA/events/AHA_5047.json"),
+        #Path("src/data/raw/AHA/events/AHA_1445.json"),  # +1
+        #Path("src/data/raw/AHA/events/AHA_2912.json"),  # low bump +1
+        #Path("src/data/raw/AHA/events/AHA_5047.json"),  # +1
 
-        #Path("src/data/raw/GKR/events/GKR_2168.json"), #Idk
-        #Path("src/data/raw/GKR/events/GKR_6547.json"), #maybe
-        #Path("src/data/raw/GKR/events/GKR_9406.json"), # Ingen data......  ikke den eneste heller, heh. 
-        #Path("src/data/raw/GKR/events/GKR_6465.json"), # GKR på increasing pressure er A##
+        #Path("src/data/raw/GKR/events/GKR_2168.json"),  # -1
+        #Path("src/data/raw/GKR/events/GKR_6547.json"),  # -1
+        #Path("src/data/raw/GKR/events/GKR_9406.json"),  # Ingen data. 0 Data. 0. 
 
-        #Path("src/data/raw/GRA/events/GRA_41.json"),
-        #Path("src/data/raw/GRA/events/GRA_309.json"), # interesting <-- check more on
-        #Path("src/data/raw/GRA/events/GRA_1184.json"), # look more on
-        #Path("src/data/raw/GRA/events/GRA_1901.json"), # same as above, look at it
+        #Path("src/data/raw/GRA/events/GRA_41.json"),    # + 0.5
+        #Path("src/data/raw/GRA/events/GRA_309.json"),   # +1
+        #Path("src/data/raw/GRA/events/GRA_1184.json"),  # +1 
+        #Path("src/data/raw/GRA/events/GRA_1901.json"),  # +1
         
-        #Path("src/data/raw/JCB/events/JCB_11377.json"), # look at aswell
-        #Path("src/data/raw/JCB/events/JCB_12198.json"), # look at
-        #Path("src/data/raw/JCB/events/JCB_80553.json"),
+        #Path("src/data/raw/JCB/events/JCB_11377.json"), # +1
+        #Path("src/data/raw/JCB/events/JCB_12198.json"), # +1
+        #Path("src/data/raw/JCB/events/JCB_80553.json"), # +1
 
-        #Path("src/data/raw/JSDP/events/JSDP_693.json"), # interesting case
-        #Path("src/data/raw/JSDP/events/JSDP_3202.json"), # good case
-        #Path("src/data/raw/JSDP/events/JSDP_19843.json"), # noisy sample, decent case to view
+        #Path("src/data/raw/JSDP/events/JSDP_693.json"),   # +1
+        #Path("src/data/raw/JSDP/events/JSDP_3202.json"),  # +1
+        #Path("src/data/raw/JSDP/events/JSDP_19843.json"), # +1
 
-        #Path("src/data/raw/JSP1/events/JSP1_6958.json"), # good case, look at
-        #Path("src/data/raw/JSP1/events/JSP1_9636.json"), # flat case, good 
-        #Path("src/data/raw/JSP1/events/JSP1_10054.json"), # good case
-        #Path("src/data/raw/JSP1/events/JSP1_218593.json"), # case case case
+        #Path("src/data/raw/JSP1/events/JSP1_6958.json"),   # +1
+        #Path("src/data/raw/JSP1/events/JSP1_9636.json"),   # +1
+        #Path("src/data/raw/JSP1/events/JSP1_10054.json"),  # +1
+        #Path("src/data/raw/JSP1/events/JSP1_218593.json"), # +1
 
-        #Path("src/data/raw/JSP2/events/JSP2_4951.json"), # i guess, maybe?
-        #Path("src/data/raw/JSP2/events/JSP2_5108.json"), # +1
-        #Path("src/data/raw/JSP2/events/JSP2_9657.json"), # +1
-        #Path("src/data/raw/JSP2/events/JSP2_10157.json"), # actually correct :O
+        #Path("src/data/raw/JSP2/events/JSP2_4951.json"),  # +1
+        #Path("src/data/raw/JSP2/events/JSP2_5108.json"),  # +0.5
+        #Path("src/data/raw/JSP2/events/JSP2_9657.json"),  # +0.5
+        #Path("src/data/raw/JSP2/events/JSP2_10157.json"), # +0.5
 
-        #Path("src/data/raw/JSRP/events/JSRP_34479.json"), +1 case
-        #Path("src/data/raw/JSRP/events/JSRP_2256.json"), # actually correct ! 
-        #Path("src/data/raw/JSRP/events/JSRP_122062.json"), # actually correct!
+        #Path("src/data/raw/JSRP/events/JSRP_34479.json"),  # +1
+        #Path("src/data/raw/JSRP/events/JSRP_2256.json"),   # -1
+        #Path("src/data/raw/JSRP/events/JSRP_122062.json"), # +1
 
-        #Path("src/data/raw/OSH/events/OSH_3489.json"), # +1 case
-        #Path("src/data/raw/OSH/events/OSH_5970.json"), # correct, i guess?
-        #Path("src/data/raw/OSH/events/OSH_6261.json"), # correct, i guess??
+        #Path("src/data/raw/OSH/events/OSH_3489.json"),  # -1
+        #Path("src/data/raw/OSH/events/OSH_5970.json"),  # +1
+        #Path("src/data/raw/OSH/events/OSH_6261.json"),  # +1
 
-        #Path("src/data/raw/OSS/events/OSS_1924.json"), # useless
-
-        #Path("src/data/raw/TROA/events/TROA_7021.json"), # correct, i guess???
-        #Path("src/data/raw/TROA/events/TROA_12310.json"), # correct
+        #Path("src/data/raw/TROA/events/TROA_7021.json"),  # -1
+        #Path("src/data/raw/TROA/events/TROA_12310.json"), # +1
 
 
     ]
