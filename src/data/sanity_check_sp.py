@@ -278,6 +278,8 @@ def main() -> None:
 
         #Path("src/data/raw/TROA/events/TROA_7021.json"),  # -1
         #Path("src/data/raw/TROA/events/TROA_12310.json"), # +1
+
+        Path("src/data/raw/JSP2/events/JSP2_28516.json"), # +1
     ]
 
     path = next((candidate for candidate in candidate_paths if candidate.exists()), None)

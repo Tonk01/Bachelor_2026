@@ -776,9 +776,10 @@ def detect_sp(
         plateau_n = ms_to_samples(700.0, samplerate, minimum=20)
 
         step_candidates = []
-
+        
+        stride = ms_to_samples(25.0, samplerate, minimum=1)
         if search_d1.size > step_n + plateau_n:
-            for i in range(step_n, search_d1.size - plateau_n):
+            for i in range(step_n, search_d1.size - plateau_n, stride):
                 before = search_d1[i - step_n:i]
                 after = search_d1[i:i + plateau_n]
 

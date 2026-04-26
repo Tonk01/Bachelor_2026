@@ -25,7 +25,7 @@ from src.data.targets import (PRPConfig, BPConfig, SPConfig, detect_prp, detect_
 
 
 SEED = 42
-BATCH_SIZE = 24
+BATCH_SIZE = 16
 EPOCHS = 1
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
@@ -34,10 +34,15 @@ TRAIN_FRAC = 0.70
 VAL_FRAC = 0.15
 TEST_FRAC = 0.15
 
-MAX_TRAIN_SAMPLES = 100
-MAX_VAL_SAMPLES = 20
-MAX_TEST_SAMPLES = 20
+MAX_TRAIN_SAMPLES = 5000
+MAX_VAL_SAMPLES = 1000
+MAX_TEST_SAMPLES = 1000
 WORKERS = 0
+
+class ValveSubset(Subset):
+    @property
+    def estimated_lengths(self) -> list[int]:
+        return [self.dataset.estimated_lengths[i] for i in self.indices]
 
 
 
@@ -249,9 +254,9 @@ def main() -> None:
     val_idx = _subset_indices(val_idx, max_val_samples, seed + 1)
     test_idx = _subset_indices(test_idx, max_test_samples, seed + 2)
 
-    train_dataset = Subset(full_dataset, train_idx.tolist())
-    val_dataset = Subset(full_dataset, val_idx.tolist())
-    test_dataset = Subset(full_dataset, test_idx.tolist())
+    train_dataset = ValveSubset(full_dataset, train_idx.tolist())
+    val_dataset = ValveSubset(full_dataset, val_idx.tolist())
+    test_dataset = ValveSubset(full_dataset, test_idx.tolist())
 
     _summarize_subset("Train", train_dataset)
     _summarize_subset("Val", val_dataset)

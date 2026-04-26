@@ -76,7 +76,7 @@ class ValveDataset(Dataset):
             target_time = t3 - t2
 
             if target_time > 1.0:
-                print(f"load={t1-t0:.4f}s preprocess={t2-t1:.4f}s target={t3-t2:.4f}s total={t3-t0:.4f}s")
+                print(f"preprocess={t2-t1:.4f}s target={t3-t2:.4f}s total={t3-t0:.4f}s, {path}")
 
         except ValueError as exc:
             if "Samplerate" in str(exc):
