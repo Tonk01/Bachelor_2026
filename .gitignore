@@ -212,6 +212,7 @@ __marimo__/
 
 # Data ignore
 **/data/raw/
+**/data/raw_strain_travel
 **/data/processed/
 **/data/splits/
 
@@ -219,3 +220,4 @@ sites.txt
 plots/
 artifacts
 **/data/cache
+

@@ -52,30 +52,48 @@ def peek_event_samplerate(path: Path, max_lines: int = 64) -> int | None:
 def peak_event_metadata(path: Path) -> EventMetaData | None:
     try:
         with path.open("r", encoding="utf-8") as file:
-            data = json.load(file)
+            text = file.read()
 
-            samplerate = int(data["samplerate"])
-            eventdata = data["eventdata"]
+        # samplerate extraction.
+        samplerate_key = '"samplerate":'
+        idx = text.find(samplerate_key)
+        if idx == -1:
+            return None
 
-            if samplerate <= 0:
-                return None
-            
-            if not isinstance(eventdata, list):
-                return None
-            
-            n_samples = len(eventdata)
+        start = idx + len(samplerate_key)
+        end = text.find(",", start)
+        samplerate = int(text[start:end].strip())
 
-            if n_samples == 0:
-                return None
-            
-            duration_sec = n_samples / samplerate
+        if samplerate <= 0:
+            return None
 
-            return EventMetaData(
-                path=str(path),
-                samplerate=samplerate,
-                n_samples=n_samples,
-                duration_sec=duration_sec,
-            )
+        # evendata array extraction
+        data_key = '"eventdata":'
+        idx = text.find(data_key)
+        if idx == -1:
+            return None
+
+        start = text.find("[", idx)
+        end = text.find("]", start)
+
+        if start == -1 or end == -1:
+            return None
+
+        # count commas which equals number of elements
+        array_str = text[start+1:end]
+        n_samples = array_str.count(",") + 1 if array_str.strip() else 0
+
+        if n_samples == 0:
+            return None
+
+        duration_sec = n_samples / samplerate
+
+        return EventMetaData(
+            path=str(path),
+            samplerate=samplerate,
+            n_samples=n_samples,
+            duration_sec=duration_sec,
+        )
         
     except Exception:
         return None

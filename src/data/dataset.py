@@ -8,6 +8,7 @@ import numpy as np
 
 import torch
 from torch.utils.data import Dataset
+from concurrent.futures import ThreadPoolExecutor
 
 import time
 
@@ -15,7 +16,7 @@ from .data_loader import load_event, find_event_files, peak_event_metadata
 from .preprocess import EventProcessor, PreprocessingConfig
 
 class ValveDataset(Dataset):
-    def __init__(self, *event_roots: str | Path, preprocessor: EventProcessor | None = None, target_builder: Callable) -> None:
+    def __init__(self, *event_roots: str | Path, preprocessor: EventProcessor | None = None, target_builder: Callable[[any, torch.tensor]]) -> None:
         self.preprocessor = preprocessor or EventProcessor(PreprocessingConfig())
         self.target_builder = target_builder
         
@@ -28,19 +29,28 @@ class ValveDataset(Dataset):
         self.skipped_samplerates: Counter[int] = Counter()
         self.other_load_errors = 0
 
-        for i, path in enumerate(all_file_paths, start=1):
-            if i % 100 == 0:
-                print(f"Scanned {i}/{len(all_file_paths)} files")
-
+        def scan_one(path: Path):
             metadata = peak_event_metadata(path)
-
             if metadata is None:
-                continue
+                return None
+            
+            estimated_length = max(1, int(round(metadata.duration_sec * 400)))
+            return path, metadata.duration_sec, estimated_length
 
-            self.file_paths.append(path)
-            self.estimated_durations.append(metadata.duration_sec)
-            self.estimated_lengths.append(max(1, int(round(metadata.duration_sec * 400))))
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            for i, result in enumerate(executor.map(scan_one, all_file_paths), start=1):
 
+                if i % 1000 == 0:
+                    print(f"Scanned {i} / {len(all_file_paths)} files")
+
+                if result is None:
+                    continue
+
+                path, duration_sec, estimated_length = result
+
+                self.file_paths.append(path)
+                self.estimated_durations.append(duration_sec)
+                self.estimated_lengths.append(estimated_length)
 
 
     def __len__(self) -> int:
@@ -63,7 +73,11 @@ class ValveDataset(Dataset):
             y = self.target_builder(processed).to(torch.float32)
             t3 = time.perf_counter()
 
-            print(f"load={t1-t0:.4f}s preprocess={t2-t1:.4f}s target={t3-t2:.4f}s total={t3-t0:.4f}s")
+            target_time = t3 - t2
+
+            if target_time > 1.0:
+                print(f"load={t1-t0:.4f}s preprocess={t2-t1:.4f}s target={t3-t2:.4f}s total={t3-t0:.4f}s")
+
         except ValueError as exc:
             if "Samplerate" in str(exc):
                 samplerate = getattr(locals().get("event"), "samplerate", None)

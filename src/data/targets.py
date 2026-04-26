@@ -707,8 +707,6 @@ def detect_sp(
     pressure_decreasing = net_change > 0.0
 
     if pressure_decreasing:
-        print("decreasing")
-
         search_dev = deviation[search_start:search_end]
 
         if search_dev.size == 0:
