@@ -251,7 +251,7 @@ def main() -> None:
         #Path("src/data/raw/GRA/events/GRA_1901.json"),  # +1
         
         #Path("src/data/raw/JCB/events/JCB_11377.json"), # +1
-        #Path("src/data/raw/JCB/events/JCB_12198.json"), # +1
+        #Path("src/data/raw/JCB/events/JCB_12198.json"), # +0.5
         #Path("src/data/raw/JCB/events/JCB_80553.json"), # +1
 
         #Path("src/data/raw/JSDP/events/JSDP_693.json"),   # +1
@@ -279,7 +279,7 @@ def main() -> None:
         #Path("src/data/raw/TROA/events/TROA_7021.json"),  # -1
         #Path("src/data/raw/TROA/events/TROA_12310.json"), # +1
 
-        Path("src/data/raw/JSP2/events/JSP2_28516.json"), # +1
+        #Path("src/data/raw/JSP2/events/JSP2_28516.json"), # +1
     ]
 
     path = next((candidate for candidate in candidate_paths if candidate.exists()), None)

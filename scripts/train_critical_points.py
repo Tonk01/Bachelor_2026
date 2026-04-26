@@ -26,7 +26,7 @@ from src.data.targets import (PRPConfig, BPConfig, SPConfig, detect_prp, detect_
 
 SEED = 42
 BATCH_SIZE = 16
-EPOCHS = 1
+EPOCHS = 5
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
 
@@ -34,9 +34,9 @@ TRAIN_FRAC = 0.70
 VAL_FRAC = 0.15
 TEST_FRAC = 0.15
 
-MAX_TRAIN_SAMPLES = 5000
-MAX_VAL_SAMPLES = 1000
-MAX_TEST_SAMPLES = 1000
+MAX_TRAIN_SAMPLES = 2000
+MAX_VAL_SAMPLES = 400
+MAX_TEST_SAMPLES = 400
 WORKERS = 0
 
 class ValveSubset(Subset):
