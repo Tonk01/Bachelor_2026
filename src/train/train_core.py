@@ -19,6 +19,7 @@ class TrainConfig:
     weight_decay: float = 1e-4  
     workers: int = 0
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    in_channels: int = 1
     
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
     return {
@@ -185,7 +186,7 @@ def fit(
         workers=cfg.workers,
     )
 
-    model = ValveEventCNN().to(device)
+    model = ValveEventCNN(in_channels=cfg.in_channels).to(device)
     criterion = MaskedBCELoss()
     optimizer = torch.optim.AdamW(
         model.parameters(),
