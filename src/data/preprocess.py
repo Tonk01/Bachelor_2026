@@ -51,7 +51,7 @@ class EventProcessor:
             raise ValueError("signal must be 1D")
         
         if x.size == 0:
-            raise ValueError("signal is emoty")
+            raise ValueError("signal is empty")
 
         if not np.isfinite(x).all():
             raise ValueError("signal contains NaN or INF")

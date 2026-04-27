@@ -37,7 +37,8 @@ def test_preprocess_event_resamples_1000hz_to_400hz() -> None:
     assert processed.samplerate == 400
     assert processed.n_samples == 400
     assert math.isclose(processed.duration_sec, 1.0)
-    assert processed.signal.shape == (400,)
+    assert processed.resampled_signal.shape == (400,)
+    assert processed.normalized_signal.shape == (400,)
 
 
 def test_preprocess_event_keeps_400hz_length() -> None:
@@ -49,14 +50,15 @@ def test_preprocess_event_keeps_400hz_length() -> None:
     assert processed.samplerate == 400
     assert processed.n_samples == 400
     assert math.isclose(processed.duration_sec, 1.0)
-    assert processed.signal.shape == (400,)
+    assert processed.resampled_signal.shape == (400,)
+    assert processed.normalized_signal.shape == (400,)
 
 
 def test_preprocess_event_rejects_unsupported_samplerate() -> None:
     processor = EventProcessor()
-    event = make_event(samplerate=200, signal=[1.0, 2.0, 3.0, 4.0])
+    event = make_event(samplerate=123, signal=[1.0, 2.0, 3.0, 4.0])
 
-    with pytest.raises(ValueError, match="Samplerate 200 not allowed"):
+    with pytest.raises(ValueError, match="Samplerate 123 not allowed"):
         processor.preprocess_event(event)
 
 
@@ -64,7 +66,7 @@ def test_preprocess_event_rejects_empty_signal() -> None:
     processor = EventProcessor()
     event = make_event(samplerate=400, signal=[])
 
-    with pytest.raises(ValueError, match="Signal is empty"):
+    with pytest.raises(ValueError, match="signal is empty"):
         processor.preprocess_event(event)
 
 
@@ -72,7 +74,7 @@ def test_preprocess_all_collects_errors_and_continues() -> None:
     processor = EventProcessor()
     valid_event = make_event(samplerate=400, signal=list(np.linspace(0.0, 1.0, 400)))
     invalid_event = make_event(
-        samplerate=200,
+        samplerate=123,
         signal=[1.0, 2.0, 3.0, 4.0],
         path="bad-event.json",
     )
@@ -82,4 +84,4 @@ def test_preprocess_all_collects_errors_and_continues() -> None:
     assert len(processed) == 1
     assert len(errors) == 1
     assert errors[0][0] == "bad-event.json"
-    assert "Samplerate 200 not allowed" in errors[0][1]
+    assert "Samplerate 123 not allowed" in errors[0][1]

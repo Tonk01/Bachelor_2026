@@ -32,8 +32,8 @@ class BucketBatchSampler(BatchSampler):
             shuffle_indices.extend(window)
 
         batches: list[list[int]] = []
-        for start in range(0, len(indices), self.batch_size):
-            batch = indices[start:start + self.batch_size]
+        for start in range(0, len(shuffle_indices), self.batch_size):
+            batch = shuffle_indices[start:start + self.batch_size]
 
             if len(batch) < self.batch_size and self.drop_last:
                 continue
