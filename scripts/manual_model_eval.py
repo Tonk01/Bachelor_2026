@@ -92,23 +92,34 @@ def plot_predictions(
     fig, ax = plt.subplots(1, 1, figsize=(16, 6))
 
     ax.plot(raw_time, raw_signal, label="raw", alpha=0.35)
-    ax.plot(time_axis, resampled_signal, label="resampled", alpha=0.85)
 
-    for name, result in predictions.items():
+    colors = {"PRP": "blue", "BP": "orange", "SP": "green"}
+
+    for name in ["PRP", "BP", "SP"]:
+        if name not in predictions:
+            continue
+
+        result = predictions[name]
         t = result["time_sec"]
         idx = result["index"]
         conf = result["confidence"]
 
-        ax.axvline(t, linestyle="--", label=f"{name} idx={idx} conf={conf:.3f}")
+        ax.axvline(
+            t,
+            linestyle="--",
+            color=colors[name],
+            linewidth=2,
+            label=f"{name} idx={idx} conf={conf:.3f}",
+        )
 
     ax.set_title(f"{event_path.name} | Model: {run_dir.name}")
     ax.set_xlabel("time (s)")
     ax.set_ylabel("pressure")
     ax.legend()
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.show()
-
 
 def main():
     run_dir = PROJECT_ROOT / "artifacts" / RUN_NAME
