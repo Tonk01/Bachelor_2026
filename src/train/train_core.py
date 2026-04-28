@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -18,6 +19,8 @@ class TrainConfig:
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4  
     workers: int = 0
+    prefetch_factor: int | None = 2
+    persistent_workers: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     in_channels: int = 1
     
@@ -35,7 +38,18 @@ def build_dataloader(
     batch_size: int,
     shuffle: bool,
     workers: int,
+    prefetch_factor: int | None,
+    persistent_workers: bool,
 ) -> DataLoader:
+    loader_kwargs = {
+        "collate_fn": valve_collate,
+        "pin_memory": torch.cuda.is_available(),
+        "num_workers": workers,
+    }
+    if workers > 0:
+        loader_kwargs["persistent_workers"] = persistent_workers
+        if prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = prefetch_factor
     
     if hasattr(dataset, "estimated_lengths"):
         batch_sampler = BucketBatchSampler(
@@ -48,18 +62,14 @@ def build_dataloader(
         return DataLoader(
             dataset,
             batch_sampler=batch_sampler,
-            collate_fn=valve_collate,
-            pin_memory=torch.cuda.is_available(),
-            num_workers=workers,
+            **loader_kwargs,
         )
     
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        collate_fn=valve_collate,
-        pin_memory=torch.cuda.is_available(),
-        num_workers=workers,
+        **loader_kwargs,
     )
 
 def train_one_epoch(
@@ -171,12 +181,17 @@ def fit(
     
     if cfg.workers < 0:
         raise ValueError("workers must be >= 0")
+    
+    if cfg.prefetch_factor is not None and cfg.prefetch_factor <= 0:
+        raise ValueError("prefetch_factor must be > 0 when provided")
 
     train_loader = build_dataloader(
         dataset=train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
         workers=cfg.workers,
+        prefetch_factor=cfg.prefetch_factor,
+        persistent_workers=cfg.persistent_workers,
     )
 
     val_loader = build_dataloader(
@@ -184,6 +199,8 @@ def fit(
         batch_size=cfg.batch_size,
         shuffle=False,
         workers=cfg.workers,
+        prefetch_factor=cfg.prefetch_factor,
+        persistent_workers=cfg.persistent_workers,
     )
 
     model = ValveEventCNN(in_channels=cfg.in_channels).to(device)
@@ -197,16 +214,30 @@ def fit(
     print("Using device", device)
     if device.type == "cuda":
         print("GPU", torch.cuda.get_device_name(0))
+    print(
+        "DataLoader workers",
+        cfg.workers,
+        "| prefetch_factor",
+        cfg.prefetch_factor if cfg.workers > 0 else None,
+        "| persistent_workers",
+        cfg.persistent_workers if cfg.workers > 0 else False,
+    )
 
     history = {
         "train_loss": [],
         "val_loss": [],
+        "train_seconds": [],
+        "val_seconds": [],
+        "epoch_seconds": [],
     }
 
     best_val_loss = float("inf")
     best_state_dict: dict[str, torch.Tensor] | None = None
+    fit_start = time.perf_counter()
 
     for epoch in range(1, cfg.epochs + 1):
+        epoch_start = time.perf_counter()
+        train_start = time.perf_counter()
         train_loss = train_one_epoch(
             model=model,
             loader=train_loader,
@@ -214,20 +245,29 @@ def fit(
             criterion=criterion,
             device=device,
         )
+        train_seconds = time.perf_counter() - train_start
 
+        val_start = time.perf_counter()
         val_loss = validate_one_epoch(
             model=model,
             loader=val_loader,
             criterion=criterion,
             device=device,
         )
+        val_seconds = time.perf_counter() - val_start
+        epoch_seconds = time.perf_counter() - epoch_start
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
+        history["train_seconds"].append(train_seconds)
+        history["val_seconds"].append(val_seconds)
+        history["epoch_seconds"].append(epoch_seconds)
 
         print(
             f"epoch={epoch}/{cfg.epochs} "
             f"train_loss={train_loss:.6f} - val_loss={val_loss:.6f} "
+            f"train_time={train_seconds:.1f}s val_time={val_seconds:.1f}s "
+            f"epoch_time={epoch_seconds:.1f}s"
         )
 
         if val_loss < best_val_loss:
@@ -240,5 +280,6 @@ def fit(
     if best_state_dict is None:
         raise ValueError("No best model state was captured during training")
 
+    history["total_seconds"] = [time.perf_counter() - fit_start]
     model.load_state_dict(best_state_dict)
     return model, history

@@ -17,6 +17,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 load_dotenv(dotenv_path=str(PROJECT_ROOT / ".env"), override=False)
 
+from src.data.cache import cache_is_compatible, cache_raw_split_path, ensure_dataset_cache
+from src.data.cached_dataset import CachedValveDataset
 from src.data.multisensor_dataset import MultiSensorValveDataset
 from src.train.train_core import TrainConfig, fit
 from src.data.preprocess import EventProcessor, PreprocessingConfig
@@ -45,8 +47,11 @@ TEST_FRAC = 0.15
 MAX_TRAIN_SAMPLES = 1500
 MAX_VAL_SAMPLES = 300
 MAX_TEST_SAMPLES = 300
-WORKERS = 0
+WORKERS = max(1, min(4, (os.cpu_count() or 1) // 2 or 1))
+PREFETCH_FACTOR = 2
 SENSOR_SAMPLERATES = (10, 50, 200, 250, 400, 800, 1000, 2000)
+CACHE_NAME = "valve-3sensor-v1"
+CACHE_TARGET_VERSION = 1
 
 
 class ValveSubset(Subset):
@@ -74,6 +79,17 @@ def _env_path(name: str, default: Path) -> Path:
     if value is None:
         return default
     return Path(value)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_cache_dir() -> Path:
+    return PROJECT_ROOT / "data" / "cache" / CACHE_NAME
 
 
 def _set_seed(seed: int) -> None:
@@ -158,6 +174,7 @@ def main() -> None:
     learning_rate = _env_float("LEARNING_RATE", LEARNING_RATE)
     weight_decay = _env_float("WEIGHT_DECAY", WEIGHT_DECAY)
     workers = _env_int("WORKERS", WORKERS)
+    prefetch_factor = _env_int("PREFETCH_FACTOR", PREFETCH_FACTOR)
 
     train_frac = _env_float("TRAIN_FRAC", TRAIN_FRAC)
     val_frac = _env_float("VAL_FRAC", VAL_FRAC)
@@ -166,6 +183,12 @@ def main() -> None:
     max_val_samples = _env_int("MAX_VAL_SAMPLES", MAX_VAL_SAMPLES)
     max_test_samples = _env_int("MAX_TEST_SAMPLES", MAX_TEST_SAMPLES)
     dataset_root = _env_path("MULTISENSOR_DATASET_PATH", DEFAULT_DATASET_PATH)
+    use_cache = _env_bool("USE_CACHE", True)
+    rebuild_cache = _env_bool("REBUILD_CACHE", False)
+    cache_only = _env_bool("CACHE_ONLY", False)
+    cache_dir = Path(os.getenv("CACHE_DIR", str(_default_cache_dir())))
+    if cache_only and not use_cache:
+        raise ValueError("CACHE_ONLY=1 requires USE_CACHE=1")
 
     _set_seed(seed)
 
@@ -176,32 +199,123 @@ def main() -> None:
     preprocessor = EventProcessor(
         PreprocessingConfig(allowed_samplerate=SENSOR_SAMPLERATES)
     )
-    full_dataset = MultiSensorValveDataset(
-        dataset_root,
-        preprocessor=preprocessor,
-        target_builder=build_targets,
+    expected_cache_meta = {
+        "cache_name": CACHE_NAME,
+        "mode": "3sensor",
+        "dataset_root": str(dataset_root),
+        "in_channels": 3,
+        "target_samplerate": preprocessor.config.target_samplerate,
+        "allowed_samplerate": list(preprocessor.config.allowed_samplerate),
+        "normalize_for_model": preprocessor.config.normalize_for_model,
+        "normal_eps": preprocessor.config.normal_eps,
+        "train_frac": train_frac,
+        "val_frac": val_frac,
+        "test_frac": test_frac,
+        "split_seed": seed,
+        "target_version": CACHE_TARGET_VERSION,
+        "sensors": ["pressure", "strain", "travel"],
+        "skip_flat_signals": True,
+        "min_std": 1e-12,
+        "max_duration_mismatch_sec": 0.025,
+    }
+
+    full_train_dataset: Subset | CachedValveDataset
+    full_val_dataset: Subset | CachedValveDataset
+    full_test_dataset: Subset | CachedValveDataset
+    raw_split_indices: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    n_total: int | None = None
+    skipped_reasons: dict[str, int] = {}
+
+    if use_cache:
+        if rebuild_cache or not cache_is_compatible(cache_dir, expected_cache_meta):
+            full_dataset = MultiSensorValveDataset(
+                dataset_root,
+                preprocessor=preprocessor,
+                target_builder=build_targets,
+            )
+            n_total = len(full_dataset)
+            print("Discovered complete 3-sensor events:", n_total)
+            print("Skipped during discovery:", dict(full_dataset.skipped_reasons))
+            skipped_reasons = dict(full_dataset.skipped_reasons)
+            if n_total == 0:
+                raise ValueError("No complete 3-sensor events found")
+
+            raw_split_indices = _split_indices(
+                n_items=n_total,
+                train_frac=train_frac,
+                val_frac=val_frac,
+                test_frac=test_frac,
+                seed=seed,
+            )
+            ensure_dataset_cache(
+                dataset=full_dataset,
+                cache_dir=cache_dir,
+                split_indices={
+                    "train": raw_split_indices[0],
+                    "val": raw_split_indices[1],
+                    "test": raw_split_indices[2],
+                },
+                expected_meta=expected_cache_meta,
+                rebuild=True,
+            )
+        else:
+            print("Using compatible cache:", cache_dir)
+
+        full_train_dataset = CachedValveDataset(cache_dir, split="train")
+        full_val_dataset = CachedValveDataset(cache_dir, split="val")
+        full_test_dataset = CachedValveDataset(cache_dir, split="test")
+        n_total = int(full_train_dataset.meta["num_samples"])
+        print("Train samples:", len(full_train_dataset))
+        print("Val samples:", len(full_val_dataset))
+        print("Test samples:", len(full_test_dataset))
+        if cache_only:
+            print("Cache ready:", cache_dir)
+            return
+    else:
+        full_dataset = MultiSensorValveDataset(
+            dataset_root,
+            preprocessor=preprocessor,
+            target_builder=build_targets,
+        )
+
+        n_total = len(full_dataset)
+        print("Discovered complete 3-sensor events:", n_total)
+        print("Skipped during discovery:", dict(full_dataset.skipped_reasons))
+        skipped_reasons = dict(full_dataset.skipped_reasons)
+        if n_total == 0:
+            raise ValueError("No complete 3-sensor events found")
+
+        raw_split_indices = _split_indices(
+            n_items=n_total,
+            train_frac=train_frac,
+            val_frac=val_frac,
+            test_frac=test_frac,
+            seed=seed,
+        )
+
+        full_train_dataset = ValveSubset(full_dataset, raw_split_indices[0].tolist())
+        full_val_dataset = ValveSubset(full_dataset, raw_split_indices[1].tolist())
+        full_test_dataset = ValveSubset(full_dataset, raw_split_indices[2].tolist())
+
+    train_local_idx = _subset_indices(
+        np.arange(len(full_train_dataset), dtype=np.int64),
+        max_train_samples,
+        seed,
+    )
+    val_local_idx = _subset_indices(
+        np.arange(len(full_val_dataset), dtype=np.int64),
+        max_val_samples,
+        seed + 1,
+    )
+    test_local_idx = _subset_indices(
+        np.arange(len(full_test_dataset), dtype=np.int64),
+        max_test_samples,
+        seed + 2,
     )
 
-    n_total = len(full_dataset)
-    print("Discovered complete 3-sensor events:", n_total)
-    print("Skipped during discovery:", dict(full_dataset.skipped_reasons))
-    if n_total == 0:
-        raise ValueError("No complete 3-sensor events found")
-
-    train_idx, val_idx, test_idx = _split_indices(
-        n_items=n_total,
-        train_frac=train_frac,
-        val_frac=val_frac,
-        test_frac=test_frac,
-        seed=seed,
-    )
-    train_idx = _subset_indices(train_idx, max_train_samples, seed)
-    val_idx = _subset_indices(val_idx, max_val_samples, seed + 1)
-    test_idx = _subset_indices(test_idx, max_test_samples, seed + 2)
-
-    train_dataset = ValveSubset(full_dataset, train_idx.tolist())
-    val_dataset = ValveSubset(full_dataset, val_idx.tolist())
-    test_dataset = ValveSubset(full_dataset, test_idx.tolist())
+    train_dataset = ValveSubset(full_train_dataset, train_local_idx.tolist())
+    val_dataset = ValveSubset(full_val_dataset, val_local_idx.tolist())
+    test_dataset = ValveSubset(full_test_dataset, test_local_idx.tolist())
 
     print("Train samples:", len(train_dataset))
     print("Val samples:", len(val_dataset))
@@ -213,6 +327,7 @@ def main() -> None:
         learning_rate=learning_rate,
         weight_decay=weight_decay,
         workers=workers,
+        prefetch_factor=prefetch_factor,
         in_channels=3,
     )
 
@@ -222,9 +337,14 @@ def main() -> None:
     run_dir = artifacts_dir / f"valve-cnn-3sensor-{run_timestamp}"
     run_dir.mkdir(parents=True, exist_ok=False)
 
-    np.save(run_dir / "train_idx.npy", train_idx)
-    np.save(run_dir / "val_idx.npy", val_idx)
-    np.save(run_dir / "test_idx.npy", test_idx)
+    if use_cache:
+        np.save(run_dir / "train_idx.npy", np.load(cache_raw_split_path(cache_dir, "train")))
+        np.save(run_dir / "val_idx.npy", np.load(cache_raw_split_path(cache_dir, "val")))
+        np.save(run_dir / "test_idx.npy", np.load(cache_raw_split_path(cache_dir, "test")))
+    elif raw_split_indices is not None:
+        np.save(run_dir / "train_idx.npy", raw_split_indices[0])
+        np.save(run_dir / "val_idx.npy", raw_split_indices[1])
+        np.save(run_dir / "test_idx.npy", raw_split_indices[2])
 
     model, history = fit(
         train_dataset=train_dataset,
@@ -233,8 +353,8 @@ def main() -> None:
     )
 
     history_json = {
-        "train_loss": [float(x) for x in history["train_loss"]],
-        "val_loss": [float(x) for x in history["val_loss"]],
+        key: [float(x) for x in values]
+        for key, values in history.items()
     }
     with (run_dir / "history.json").open("w", encoding="utf-8") as fp:
         json.dump(history_json, fp, indent=2)
@@ -242,6 +362,12 @@ def main() -> None:
     torch.save(model.state_dict(), run_dir / "best_model.pt")
 
     best_val_loss = min(history["val_loss"]) if history["val_loss"] else None
+    total_training_seconds = history.get("total_seconds", [None])[-1]
+    average_epoch_seconds = (
+        float(np.mean(history["epoch_seconds"]))
+        if history.get("epoch_seconds")
+        else None
+    )
     run_summary = {
         "mode": "3sensor",
         "input_channels": ["pressure", "strain", "travel"],
@@ -251,20 +377,29 @@ def main() -> None:
         "learning_rate": learning_rate,
         "weight_decay": weight_decay,
         "workers": workers,
+        "prefetch_factor": prefetch_factor,
+        "use_cache": use_cache,
+        "cache_dir": str(cache_dir) if use_cache else None,
         "dataset_path": str(dataset_root),
-        "total_samples": int(n_total),
-        "train_samples": int(len(train_idx)),
-        "val_samples": int(len(val_idx)),
-        "test_samples": int(len(test_idx)),
+        "total_samples": int(n_total) if n_total is not None else None,
+        "train_samples": int(len(train_dataset)),
+        "val_samples": int(len(val_dataset)),
+        "test_samples": int(len(test_dataset)),
         "best_val_loss": float(best_val_loss) if best_val_loss is not None else None,
         "final_train_loss": float(history["train_loss"][-1]) if history["train_loss"] else None,
         "final_val_loss": float(history["val_loss"][-1]) if history["val_loss"] else None,
+        "total_training_seconds": (
+            float(total_training_seconds)
+            if total_training_seconds is not None
+            else None
+        ),
+        "average_epoch_seconds": average_epoch_seconds,
         "best_model_file": "best_model.pt",
         "history_file": "history.json",
         "train_indices_file": "train_idx.npy",
         "val_indices_file": "val_idx.npy",
         "test_indices_file": "test_idx.npy",
-        "skipped_reasons": dict(full_dataset.skipped_reasons),
+        "skipped_reasons": skipped_reasons,
     }
     with (run_dir / "summary.json").open("w", encoding="utf-8") as fp:
         json.dump(run_summary, fp, indent=2)
