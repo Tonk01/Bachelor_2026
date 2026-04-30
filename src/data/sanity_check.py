@@ -185,7 +185,7 @@ def main() -> None:
         #Path("src/data/raw/JCB/events/JCB_7354.json"),  # -1
         #Path("src/data/raw/JCB/events/JCB_11333.json"), # +1
 
-        Path("src/data/raw/JSDP/events/JSDP_542.json"),    # +1
+        #Path("src/data/raw/JSDP/events/JSDP_542.json"),    # +1
         #Path("src/data/raw/JSDP/events/JSDP_773.json"),    # +1
         #Path("src/data/raw/JSDP/events/JSDP_1122.json"),   # +1
         #Path("src/data/raw/JSDP/events/JSDP_37954.json"),  # +1
@@ -219,7 +219,7 @@ def main() -> None:
 
         # ---------------------------------------- || increases || ------------------------------------------------------
         #Path("src/data/raw/AHA/events/AHA_1445.json"),  # +1
-        #Path("src/data/raw/AHA/events/AHA_2912.json"),  # low bump +1
+        Path("src/data/raw/AHA/events/AHA_2912.json"),  # low bump +1
         #Path("src/data/raw/AHA/events/AHA_5047.json"),  # +1
 
         #Path("src/data/raw/GKR/events/GKR_2168.json"),  # -1

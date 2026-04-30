@@ -56,7 +56,10 @@ def build_dataloader(
             lengths=dataset.estimated_lengths,
             batch_size=batch_size,
             drop_last=False,
-            shuffle=shuffle
+            shuffle=shuffle,
+            max_length_spread=20_000,
+            shuffle_window_multipler=1,
+            debug=False,
         )
 
         return DataLoader(
@@ -86,6 +89,8 @@ def train_one_epoch(
 
 
     progress_bar = tqdm(loader, desc="Training", leave=False)
+    print()
+
     for step, batch in enumerate(progress_bar, start=1):
         if batch is None:
             continue
@@ -95,6 +100,10 @@ def train_one_epoch(
         x = batch["x"]
         y = batch["y"]
         mask = batch["mask"]
+
+        if step == 1:
+            print("First batch x device", x.device)
+            print("Model device", next(model.parameters()).device)
 
         optimizer.zero_grad(set_to_none=True)
         
@@ -106,10 +115,6 @@ def train_one_epoch(
 
         running_loss += float(loss.item())
         num_batches += 1
-
-        if step == 1:
-            print("First batch x device", x.device)
-            print("Model device", next(model.parameters()).device)
 
         progress_bar.set_postfix({
             "loss:": f"{loss.item():.6f}"

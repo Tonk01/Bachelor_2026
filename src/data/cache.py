@@ -140,7 +140,7 @@ def build_cache_from_dataset(
         sample_meta = dict(sample.get("meta", {}))
         sample_meta["cache_index"] = cache_index
         sample_meta["source_index"] = source_index
-        sample_filename = _sample_filename(cache_index, sample_meta)
+        sample_filename = f"{cache_index:06d}.pt"
 
         torch.save(
             {

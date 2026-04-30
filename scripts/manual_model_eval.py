@@ -159,9 +159,9 @@ def main():
     print("\nPredictions:")
     for name, r in predictions.items():
         print(
-            f"{name}: index={r['index']} "
-            f"time={r['time_sec']:.3f}s "
-            f"confidence={r['confidence']:.4f}"
+            f"{name}: index = {r['index']} "
+            f"time = {r['time_sec']:.3f}s "
+            f"confidence = {r['confidence']:.4f}"
         )
 
     plot_predictions(

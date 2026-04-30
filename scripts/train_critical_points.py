@@ -36,9 +36,9 @@ TRAIN_FRAC = 0.70
 VAL_FRAC = 0.15
 TEST_FRAC = 0.15
 
-MAX_TRAIN_SAMPLES = 2000
-MAX_VAL_SAMPLES = 400
-MAX_TEST_SAMPLES = 400
+MAX_TRAIN_SAMPLES = 5000
+MAX_VAL_SAMPLES = 750
+MAX_TEST_SAMPLES = 750
 WORKERS = 0
 PREFETCH_FACTOR = 2
 CACHE_NAME = "valve-1sensor-v1"
@@ -319,6 +319,7 @@ def main() -> None:
         print("Train samples:", len(full_train_dataset))
         print("Val samples:", len(full_val_dataset))
         print("Test samples:", len(full_test_dataset))
+
         if cache_only:
             print("Cache ready:", cache_dir)
             return
