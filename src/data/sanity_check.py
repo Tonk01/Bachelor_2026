@@ -166,112 +166,110 @@ def main() -> None:
     candidate_paths = [
 
        # ---------------------------------------- || drops || ------------------------------------------------------
-        #Path("src/data/raw/AHA/events/AHA_228.json"),   # -1
-        #Path("src/data/raw/AHA/events/AHA_4037.json"),  # +1
-        #Path("src/data/raw/AHA/events/AHA_18682.json"), # +1
+        Path("src/data/raw/AHA/events/AHA_228.json"),   # -1
+        Path("src/data/raw/AHA/events/AHA_4037.json"),  # +1
+        Path("src/data/raw/AHA/events/AHA_18682.json"), # +1
 
-        #Path("src/data/raw/GKR/events/GKR_43.json"),   # +1
-        #Path("src/data/raw/GKR/events/GKR_821.json"),  # +1
-        #Path("src/data/raw/GKR/events/GKR_2169.json"), # +1
-        #Path("src/data/raw/GKR/events/GKR_6465.json"), # +1
+        Path("src/data/raw/GKR/events/GKR_43.json"),   # +1
+        Path("src/data/raw/GKR/events/GKR_821.json"),  # +1
+        Path("src/data/raw/GKR/events/GKR_2169.json"), # +1
+        Path("src/data/raw/GKR/events/GKR_6465.json"), # +1
 
-        #Path("src/data/raw/GRA/events/GRA_121.json"), # +1
-        #Path("src/data/raw/GRA/events/GRA_308.json"), # -1 look at closer
-        #Path("src/data/raw/GRA/events/GRA_702.json"), # -1 look at closer
-        #Path("src/data/raw/GRA/events/GRA_566.json"), # +1
-        #Path("src/data/raw/GRA/events/GRA_861.json"), # +1
+        Path("src/data/raw/GRA/events/GRA_121.json"), # +1
+        Path("src/data/raw/GRA/events/GRA_308.json"), # -1 look at closer
+        Path("src/data/raw/GRA/events/GRA_702.json"), # -1 look at closer
+        Path("src/data/raw/GRA/events/GRA_566.json"), # +1
+        Path("src/data/raw/GRA/events/GRA_861.json"), # +1
         
-        #Path("src/data/raw/JCB/events/JCB_26848.json"), # +1
-        #Path("src/data/raw/JCB/events/JCB_7354.json"),  # -1
-        #Path("src/data/raw/JCB/events/JCB_11333.json"), # +1
+        Path("src/data/raw/JCB/events/JCB_26848.json"), # +1
+        Path("src/data/raw/JCB/events/JCB_7354.json"),  # -1
+        Path("src/data/raw/JCB/events/JCB_11333.json"), # +1
 
-        #Path("src/data/raw/JSDP/events/JSDP_542.json"),    # +1
-        #Path("src/data/raw/JSDP/events/JSDP_773.json"),    # +1
-        #Path("src/data/raw/JSDP/events/JSDP_1122.json"),   # +1
-        #Path("src/data/raw/JSDP/events/JSDP_37954.json"),  # +1
-        #Path("src/data/raw/JSDP/events/JSDP_315000.json"), # +1
+        Path("src/data/raw/JSDP/events/JSDP_542.json"),    # +1
+        Path("src/data/raw/JSDP/events/JSDP_773.json"),    # +1
+        Path("src/data/raw/JSDP/events/JSDP_1122.json"),   # +1
+        Path("src/data/raw/JSDP/events/JSDP_37954.json"),  # +1
+        Path("src/data/raw/JSDP/events/JSDP_315000.json"), # +1
 
-        #Path("src/data/raw/JSP1/events/JSP1_7788.json"),  # +1
-        #Path("src/data/raw/JSP1/events/JSP1_8225.json"),  # +1
-        #Path("src/data/raw/JSP1/events/JSP1_9871.json"),  # +1
-        #Path("src/data/raw/JSP1/events/JSP1_18000.json"), # +1
-        #Path("src/data/raw/JSP1/events/JSP1_12342.json"), # interesting case  -1
+        Path("src/data/raw/JSP1/events/JSP1_7788.json"),  # +1
+        Path("src/data/raw/JSP1/events/JSP1_8225.json"),  # +1
+        Path("src/data/raw/JSP1/events/JSP1_9871.json"),  # +1
+        Path("src/data/raw/JSP1/events/JSP1_18000.json"), # +1
+        Path("src/data/raw/JSP1/events/JSP1_12342.json"), # interesting case  -1
 
-        #Path("src/data/raw/JSP2/events/JSP2_4996.json"),  # +1
-        #Path("src/data/raw/JSP2/events/JSP2_4968.json"),  # +1  bruk som FIGUR eksempel i rapport!
-        #Path("src/data/raw/JSP2/events/JSP2_39340.json"), # -1
+        Path("src/data/raw/JSP2/events/JSP2_4996.json"),  # +1
+        Path("src/data/raw/JSP2/events/JSP2_4968.json"),  # +1  bruk som FIGUR eksempel i rapport!
+        Path("src/data/raw/JSP2/events/JSP2_39340.json"), # -1
 
-        #Path("src/data/raw/JSRP/events/JSRP_27570.json"), # look at closer  -1 
-        #Path("src/data/raw/JSRP/events/JSRP_94094.json"), # look at closer  -1 
-        #Path("src/data/raw/JSRP/events/JSRP_303736.json"), # +1
-        #Path("src/data/raw/JSRP/events/JSRP_347251.json"), # +1
+        Path("src/data/raw/JSRP/events/JSRP_27570.json"), # look at closer  -1 
+        Path("src/data/raw/JSRP/events/JSRP_94094.json"), # look at closer  -1 
+        Path("src/data/raw/JSRP/events/JSRP_303736.json"), # +1
+        Path("src/data/raw/JSRP/events/JSRP_347251.json"), # +1
 
-        #Path("src/data/raw/OSH/events/OSH_4694.json"), # -1  what? how?
-        #Path("src/data/raw/OSH/events/OSH_4734.json"), # -1  hmmm
-        #Path("src/data/raw/OSH/events/OSH_5144.json"), # +1
-        #Path("src/data/raw/OSH/events/OSH_4486.json"), # -1 
-        #Path("src/data/raw/OSS/events/OSS_7053.json"), # -1 
-        #Path("src/data/raw/OSS/events/OSS_1924.json"), # -1
+        Path("src/data/raw/OSH/events/OSH_4694.json"), # -1  what? how?
+        Path("src/data/raw/OSH/events/OSH_4734.json"), # -1  hmmm
+        Path("src/data/raw/OSH/events/OSH_5144.json"), # +1
+        Path("src/data/raw/OSH/events/OSH_4486.json"), # -1 
+        Path("src/data/raw/OSS/events/OSS_7053.json"), # -1 
+        Path("src/data/raw/OSS/events/OSS_1924.json"), # -1
 
-        #Path("src/data/raw/TROA/events/TROA_6244.json"), # +1
-        #Path("src/data/raw/TROA/events/TROA_6248.json"), # +1
-        #Path("src/data/raw/TROA/events/TROA_6711.json"), # +0.3
+        Path("src/data/raw/TROA/events/TROA_6244.json"), # +1
+        Path("src/data/raw/TROA/events/TROA_6248.json"), # +1
+        Path("src/data/raw/TROA/events/TROA_6711.json"), # +0.3
 
         # ---------------------------------------- || increases || ------------------------------------------------------
-        #Path("src/data/raw/AHA/events/AHA_1445.json"),  # +1
+        Path("src/data/raw/AHA/events/AHA_1445.json"),  # +1
         Path("src/data/raw/AHA/events/AHA_2912.json"),  # low bump +1
-        #Path("src/data/raw/AHA/events/AHA_5047.json"),  # +1
+        Path("src/data/raw/AHA/events/AHA_5047.json"),  # +1
 
-        #Path("src/data/raw/GKR/events/GKR_2168.json"),  # -1
-        #Path("src/data/raw/GKR/events/GKR_6547.json"),  # -1
-        #Path("src/data/raw/GKR/events/GKR_9406.json"),  # Ingen data. 0 Data. 0. 
+        Path("src/data/raw/GKR/events/GKR_2168.json"),  # -1
+        Path("src/data/raw/GKR/events/GKR_6547.json"),  # -1 
 
-        #Path("src/data/raw/GRA/events/GRA_41.json"),    # + 0.5
-        #Path("src/data/raw/GRA/events/GRA_309.json"),   # +1
-        #Path("src/data/raw/GRA/events/GRA_1184.json"),  # +1 
-        #Path("src/data/raw/GRA/events/GRA_1901.json"),  # +1
+        Path("src/data/raw/GRA/events/GRA_41.json"),    # + 0.5
+        Path("src/data/raw/GRA/events/GRA_309.json"),   # +1
+        Path("src/data/raw/GRA/events/GRA_1184.json"),  # +1 
+        Path("src/data/raw/GRA/events/GRA_1901.json"),  # +1
         
-        #Path("src/data/raw/JCB/events/JCB_11377.json"), # +1
-        #Path("src/data/raw/JCB/events/JCB_12198.json"), # +0.5
-        #Path("src/data/raw/JCB/events/JCB_80553.json"), # +1
+        Path("src/data/raw/JCB/events/JCB_11377.json"), # +1
+        Path("src/data/raw/JCB/events/JCB_12198.json"), # +0.5
+        Path("src/data/raw/JCB/events/JCB_80553.json"), # +1
 
-        #Path("src/data/raw/JSDP/events/JSDP_693.json"),   # +1
-        #Path("src/data/raw/JSDP/events/JSDP_3202.json"),  # +1
-        #Path("src/data/raw/JSDP/events/JSDP_19843.json"), # +1
+        Path("src/data/raw/JSDP/events/JSDP_693.json"),   # +1
+        Path("src/data/raw/JSDP/events/JSDP_3202.json"),  # +1
+        Path("src/data/raw/JSDP/events/JSDP_19843.json"), # +1
 
-        #Path("src/data/raw/JSP1/events/JSP1_6958.json"),   # +1
-        #Path("src/data/raw/JSP1/events/JSP1_9636.json"),   # +1
-        #Path("src/data/raw/JSP1/events/JSP1_10054.json"),  # +1
-        #Path("src/data/raw/JSP1/events/JSP1_218593.json"), # +1
+        Path("src/data/raw/JSP1/events/JSP1_6958.json"),   # +1
+        Path("src/data/raw/JSP1/events/JSP1_9636.json"),   # +1
+        Path("src/data/raw/JSP1/events/JSP1_10054.json"),  # +1
+        Path("src/data/raw/JSP1/events/JSP1_218593.json"), # +1
 
-        #Path("src/data/raw/JSP2/events/JSP2_4951.json"),  # +1
-        #Path("src/data/raw/JSP2/events/JSP2_5108.json"),  # +0.5
-        #Path("src/data/raw/JSP2/events/JSP2_9657.json"),  # +0.5
-        #Path("src/data/raw/JSP2/events/JSP2_10157.json"), # +0.5
+        Path("src/data/raw/JSP2/events/JSP2_4951.json"),  # +1
+        Path("src/data/raw/JSP2/events/JSP2_5108.json"),  # +0.5
+        Path("src/data/raw/JSP2/events/JSP2_9657.json"),  # +0.5
+        Path("src/data/raw/JSP2/events/JSP2_10157.json"), # +0.5
 
-        #Path("src/data/raw/JSRP/events/JSRP_34479.json"),  # +1
-        #Path("src/data/raw/JSRP/events/JSRP_2256.json"),   # -1
-        #Path("src/data/raw/JSRP/events/JSRP_122062.json"), # +1
+        Path("src/data/raw/JSRP/events/JSRP_34479.json"),  # +1
+        Path("src/data/raw/JSRP/events/JSRP_2256.json"),   # -1
+        Path("src/data/raw/JSRP/events/JSRP_122062.json"), # +1
 
-        #Path("src/data/raw/OSH/events/OSH_3489.json"),  # -1
-        #Path("src/data/raw/OSH/events/OSH_5970.json"),  # +1
-        #Path("src/data/raw/OSH/events/OSH_6261.json"),  # +1
+        Path("src/data/raw/OSH/events/OSH_3489.json"),  # -1
+        Path("src/data/raw/OSH/events/OSH_5970.json"),  # +1
+        Path("src/data/raw/OSH/events/OSH_6261.json"),  # +1
 
-        #Path("src/data/raw/TROA/events/TROA_7021.json"),  # -1
-        #Path("src/data/raw/TROA/events/TROA_12310.json"), # +1
+        Path("src/data/raw/TROA/events/TROA_7021.json"),  # -1
+        Path("src/data/raw/TROA/events/TROA_12310.json"), # +1
 
-        #Path("src/data/raw/JSP2/events/JSP2_28516.json"), # +1
+        Path("src/data/raw/JSP2/events/JSP2_28516.json"), # +1
 
 
     ]
 
-    path = next((candidate for candidate in candidate_paths if candidate.exists()), None)
-    if path is None:
-        raise FileNotFoundError("No known event path found.")
+    existing_paths = [candidate for candidate in candidate_paths if candidate.exists()]
 
-    print("Attempt to load:", path.resolve())
+    if not existing_paths:
+        raise FileNotFoundError("No known event paths found.")
 
-    event = load_event(path)
+    print(f"Found {len(existing_paths)} existing candidate paths.")
 
     processor = EventProcessor(
         PreprocessingConfig(
@@ -281,22 +279,27 @@ def main() -> None:
         )
     )
 
-    processed_event = processor.preprocess_event(event)
-    signal = processed_event.resampled_signal
+    for i, path in enumerate(existing_paths, start=1):
+        print(f"\n[{i}/{len(existing_paths)}] Attempt to load: {path.resolve()}")
 
-    title = (
-        f"Critical point inspection | site={event.sitename} | "
-        f"tag={event.valvetag} | event={event.eventid} | "
-        f"samplerate={processed_event.samplerate}"
-    )
+        event = load_event(path)
+        processed_event = processor.preprocess_event(event)
+        signal = processed_event.resampled_signal
 
-    inspect_signal(
-        signal=signal,
-        samplerate=processed_event.samplerate,
-        raw_signal=np.asarray(event.signal, dtype=np.float32),
-        raw_samplerate=event.samplerate,
-        title=title,
-    )
+        title = (
+            f"[{i}/{len(existing_paths)}] Critical point inspection | "
+            f"site={event.sitename} | "
+            f"tag={event.valvetag} | event={event.eventid} | "
+            f"samplerate={processed_event.samplerate}"
+        )
+
+        inspect_signal(
+            signal=signal,
+            samplerate=processed_event.samplerate,
+            raw_signal=np.asarray(event.signal, dtype=np.float32),
+            raw_samplerate=event.samplerate,
+            title=title,
+        )
 
 
 if __name__ == "__main__":

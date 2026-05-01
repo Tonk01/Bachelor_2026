@@ -18,20 +18,8 @@ from src.data.preprocess import EventProcessor, PreprocessingConfig
 from src.models.CNN_model import ValveEventCNN
 
 RUN_NAME = "valve-cnn-20260427-000855"
-EVENT_FILE = Path("src/data/raw/JSP1/events/JSP1_9636.json")
-
-        #Path("src/data/raw/JSDP/events/JSDP_542.json"),    # +1
-        #Path("src/data/raw/JSDP/events/JSDP_773.json"),    # +1
-        #Path("src/data/raw/JSDP/events/JSDP_1122.json"),   # +1
-        #Path("src/data/raw/JSDP/events/JSDP_37954.json"),  # +1
-        #Path("src/data/raw/JSDP/events/JSDP_315000.json"), # +1
-
-        #Path("src/data/raw/JSP1/events/JSP1_6958.json"),   # +1
-        #Path("src/data/raw/JSP1/events/JSP1_9636.json"),   # +1
-        #Path("src/data/raw/JSP1/events/JSP1_10054.json"),  # +1
-        #Path("src/data/raw/JSP1/events/JSP1_218593.json"), # +1
-
-
+NUM_RANDOM_EVENTS = 50
+RANDOM_SEED = 42
 POINT_NAMES = ["PRP", "BP", "SP"]
 
 
@@ -48,13 +36,14 @@ def load_model(run_dir: Path, device: torch.device) -> ValveEventCNN:
 
     return model
 
+
 @torch.no_grad()
 def predict_points(
     model: ValveEventCNN,
     signal: np.ndarray,
     samplerate: int,
     device: torch.device,
-):
+) -> dict:
     x = torch.from_numpy(signal).to(torch.float32)
     x = x.unsqueeze(0).unsqueeze(0).to(device)
 
@@ -76,7 +65,6 @@ def predict_points(
 
     return results
 
-
 def plot_predictions(
     raw_signal: np.ndarray,
     raw_samplerate: int,
@@ -85,9 +73,8 @@ def plot_predictions(
     predictions: dict,
     event_path: Path,
     run_dir: Path,
-):
+) -> None:
     raw_time = np.arange(raw_signal.size) / float(raw_samplerate)
-    time_axis = np.arange(resampled_signal.size) / float(samplerate)
 
     fig, ax = plt.subplots(1, 1, figsize=(16, 6))
 
@@ -95,7 +82,7 @@ def plot_predictions(
 
     colors = {"PRP": "blue", "BP": "orange", "SP": "green"}
 
-    for name in ["PRP", "BP", "SP"]:
+    for name in POINT_NAMES:
         if name not in predictions:
             continue
 
@@ -121,20 +108,34 @@ def plot_predictions(
     plt.tight_layout()
     plt.show()
 
-def main():
+
+def main() -> None:
     run_dir = PROJECT_ROOT / "artifacts" / RUN_NAME
-    event_path = EVENT_FILE
+    raw_dir = PROJECT_ROOT / "src" / "data" / "raw"
+
+    print("PROJECT_ROOT:", PROJECT_ROOT)
+    print("raw_dir:", raw_dir)
+    print("raw_dir exists:", raw_dir.exists())
+    print("run_dir:", run_dir)
+    print("run_dir exists:", run_dir.exists())
 
     if not run_dir.exists():
         raise ValueError(f"Run not found: {run_dir}")
 
-    if not event_path.exists():
-        raise ValueError(f"Event file not found: {event_path}")
+    all_event_paths = sorted(raw_dir.glob("*/events/*.json"))
+
+    if not all_event_paths:
+        raise ValueError(f"No raw event files found in: {raw_dir}")
+
+    rng = np.random.default_rng(RANDOM_SEED)
+
+    n = min(NUM_RANDOM_EVENTS, len(all_event_paths))
+    selected_indices = rng.choice(len(all_event_paths), size=n, replace=False)
+    selected_paths = [all_event_paths[i] for i in selected_indices]
 
     print("Using model:", run_dir)
-    print("Using file:", event_path)
-
-    event = load_event(event_path)
+    print(f"Found {len(all_event_paths)} raw events.")
+    print(f"Randomly selected {len(selected_paths)} events.")
 
     processor = EventProcessor(
         PreprocessingConfig(
@@ -144,35 +145,44 @@ def main():
         )
     )
 
-    processed = processor.preprocess_event(event)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(run_dir, device)
 
-    predictions = predict_points(
-        model=model,
-        signal=processed.normalized_signal,
-        samplerate=processed.samplerate,
-        device=device,
-    )
+    for i, event_path in enumerate(selected_paths, start=1):
+        print(f"\n[{i}/{len(selected_paths)}] Using file: {event_path}")
 
-    print("\nPredictions:")
-    for name, r in predictions.items():
-        print(
-            f"{name}: index = {r['index']} "
-            f"time = {r['time_sec']:.3f}s "
-            f"confidence = {r['confidence']:.4f}"
-        )
+        try:
+            event = load_event(event_path)
+            processed = processor.preprocess_event(event)
 
-    plot_predictions(
-        raw_signal=np.asarray(event.signal, dtype=np.float32),
-        raw_samplerate=event.samplerate,
-        resampled_signal=processed.resampled_signal,
-        samplerate=processed.samplerate,
-        predictions=predictions,
-        event_path=event_path,
-        run_dir=run_dir,
-    )
+            predictions = predict_points(
+                model=model,
+                signal=processed.normalized_signal,
+                samplerate=processed.samplerate,
+                device=device,
+            )
+
+            print("Predictions:")
+            for name, r in predictions.items():
+                print(
+                    f"{name}: index = {r['index']} "
+                    f"time = {r['time_sec']:.3f}s "
+                    f"confidence = {r['confidence']:.4f}"
+                )
+
+            plot_predictions(
+                raw_signal=np.asarray(event.signal, dtype=np.float32),
+                raw_samplerate=event.samplerate,
+                resampled_signal=processed.resampled_signal,
+                samplerate=processed.samplerate,
+                predictions=predictions,
+                event_path=event_path,
+                run_dir=run_dir,
+            )
+
+        except Exception as exc:
+            print(f"Failed on {event_path}: {exc}")
+            continue
 
 
 if __name__ == "__main__":
