@@ -24,14 +24,18 @@ from src.train.train_core import TrainConfig, fit
 from src.data.preprocess import EventProcessor, PreprocessingConfig
 from src.data.targets import (
     BPConfig,
+    MultiSensorBPConfig,
+    MultiSensorSPConfig,
     PRPConfig,
     SPConfig,
     build_bp_target,
     build_prp_target,
     build_sp_target,
     detect_bp,
+    detect_bp_multisensor,
     detect_prp,
     detect_sp,
+    detect_sp_multisensor,
 )
 
 
@@ -41,6 +45,7 @@ BATCH_SIZE = 8
 EPOCHS = 5
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
+DROPOUT = 0.1
 TRAIN_FRAC = 0.70
 VAL_FRAC = 0.15
 TEST_FRAC = 0.15
@@ -51,7 +56,9 @@ WORKERS = max(1, min(4, (os.cpu_count() or 1) // 2 or 1))
 PREFETCH_FACTOR = 2
 SENSOR_SAMPLERATES = (10, 50, 200, 250, 400, 800, 1000, 2000)
 CACHE_NAME = "valve-3sensor-v1"
-CACHE_TARGET_VERSION = 1
+CACHE_TARGET_VERSION = 7
+POINT_NAMES = ("PRP", "BP", "SP")
+TIME_TOLERANCES_SEC = (0.05, 0.1, 0.2)
 
 
 class ValveSubset(Subset):
@@ -137,23 +144,32 @@ def _split_indices(
     )
 
 
-def build_targets(processed_event) -> torch.Tensor:
+def build_targets(processed_event, processed_by_sensor) -> torch.Tensor:
     signal = processed_event.resampled_signal
     samplerate = processed_event.samplerate
     n_samples = processed_event.n_samples
+    travel_signal = processed_by_sensor["travel"].resampled_signal[:n_samples]
+    strain_signal = processed_by_sensor["strain"].resampled_signal[:n_samples]
 
     prp_result = detect_prp(signal=signal, config=PRPConfig(samplerate=samplerate))
-    bp_result = detect_bp(
-        signal=signal,
+    bp_result = detect_bp_multisensor(
+        pressure_signal=signal,
+        travel_signal=travel_signal,
         samplerate=samplerate,
         prp_index=prp_result.prp_index,
-        config=BPConfig(),
+        strain_signal=strain_signal,
+        pressure_config=BPConfig(),
+        multisensor_config=MultiSensorBPConfig(),
     )
-    sp_result = detect_sp(
-        signal=signal,
+    sp_result = detect_sp_multisensor(
+        pressure_signal=signal,
+        travel_signal=travel_signal,
         samplerate=samplerate,
         prp_index=prp_result.prp_index,
-        config=SPConfig(),
+        bp_index=bp_result.bp_index,
+        strain_signal=strain_signal,
+        pressure_config=SPConfig(),
+        multisensor_config=MultiSensorSPConfig(),
     )
 
     y = np.stack(
@@ -167,12 +183,94 @@ def build_targets(processed_event) -> torch.Tensor:
     return torch.from_numpy(y).to(torch.float32)
 
 
+@torch.no_grad()
+def evaluate_point_metrics(
+    model: torch.nn.Module,
+    dataset: Subset | CachedValveDataset,
+    device: torch.device,
+) -> dict[str, object]:
+    model.eval()
+
+    per_point_abs_errors: dict[str, list[float]] = {name: [] for name in POINT_NAMES}
+    per_point_signed_errors: dict[str, list[float]] = {name: [] for name in POINT_NAMES}
+    per_point_confidences: dict[str, list[float]] = {name: [] for name in POINT_NAMES}
+    valid_order_count = 0
+    num_events = 0
+
+    for index in range(len(dataset)):
+        sample = dataset[index]
+        if sample is None:
+            continue
+
+        x = sample["x"].unsqueeze(0).to(device)
+        y = sample["y"]
+        length = int(sample["length"])
+        samplerate = int(sample["meta"]["samplerate"])
+
+        logits = model(x)[0, :, :length]
+        probs = torch.sigmoid(logits).cpu().numpy()
+        targets = y[:, :length].cpu().numpy()
+
+        pred_indices: list[int] = []
+        for channel_index, point_name in enumerate(POINT_NAMES):
+            pred_index = int(np.argmax(probs[channel_index]))
+            target_index = int(np.argmax(targets[channel_index]))
+            pred_time = pred_index / float(samplerate)
+            target_time = target_index / float(samplerate)
+            signed_error = pred_time - target_time
+            abs_error = abs(signed_error)
+            confidence = float(probs[channel_index][pred_index])
+
+            per_point_abs_errors[point_name].append(abs_error)
+            per_point_signed_errors[point_name].append(signed_error)
+            per_point_confidences[point_name].append(confidence)
+            pred_indices.append(pred_index)
+
+        if pred_indices[0] <= pred_indices[1] <= pred_indices[2]:
+            valid_order_count += 1
+        num_events += 1
+
+    if num_events == 0:
+        return {
+            "num_events": 0,
+            "valid_order_fraction": None,
+            "points": {},
+        }
+
+    point_metrics: dict[str, object] = {}
+    for point_name in POINT_NAMES:
+        abs_errors = np.asarray(per_point_abs_errors[point_name], dtype=np.float64)
+        signed_errors = np.asarray(per_point_signed_errors[point_name], dtype=np.float64)
+        confidences = np.asarray(per_point_confidences[point_name], dtype=np.float64)
+
+        point_metrics[point_name] = {
+            "mean_abs_error_sec": float(np.mean(abs_errors)),
+            "median_abs_error_sec": float(np.median(abs_errors)),
+            "p90_abs_error_sec": float(np.percentile(abs_errors, 90)),
+            "mean_signed_error_sec": float(np.mean(signed_errors)),
+            "median_signed_error_sec": float(np.median(signed_errors)),
+            "mean_confidence": float(np.mean(confidences)),
+            "median_confidence": float(np.median(confidences)),
+            "within_tolerance_fraction": {
+                f"{tolerance:.2f}s": float(np.mean(abs_errors <= tolerance))
+                for tolerance in TIME_TOLERANCES_SEC
+            },
+        }
+
+    return {
+        "num_events": int(num_events),
+        "valid_order_fraction": float(valid_order_count / num_events),
+        "points": point_metrics,
+    }
+
+
 def main() -> None:
     seed = _env_int("SEED", SEED)
     batch_size = _env_int("BATCH_SIZE", BATCH_SIZE)
     epochs = _env_int("EPOCHS", EPOCHS)
     learning_rate = _env_float("LEARNING_RATE", LEARNING_RATE)
     weight_decay = _env_float("WEIGHT_DECAY", WEIGHT_DECAY)
+    dropout = _env_float("DROPOUT", DROPOUT)
     workers = _env_int("WORKERS", WORKERS)
     prefetch_factor = _env_int("PREFETCH_FACTOR", PREFETCH_FACTOR)
 
@@ -329,6 +427,7 @@ def main() -> None:
         workers=workers,
         prefetch_factor=prefetch_factor,
         in_channels=3,
+        dropout=dropout,
     )
 
     artifacts_dir = PROJECT_ROOT / "artifacts"
@@ -351,6 +450,10 @@ def main() -> None:
         val_dataset=val_dataset,
         config=train_config,
     )
+
+    device = torch.device(train_config.device)
+    val_point_metrics = evaluate_point_metrics(model, val_dataset, device)
+    test_point_metrics = evaluate_point_metrics(model, test_dataset, device)
 
     history_json = {
         key: [float(x) for x in values]
@@ -376,6 +479,7 @@ def main() -> None:
         "epochs": epochs,
         "learning_rate": learning_rate,
         "weight_decay": weight_decay,
+        "dropout": dropout,
         "workers": workers,
         "prefetch_factor": prefetch_factor,
         "use_cache": use_cache,
@@ -400,6 +504,8 @@ def main() -> None:
         "val_indices_file": "val_idx.npy",
         "test_indices_file": "test_idx.npy",
         "skipped_reasons": skipped_reasons,
+        "val_point_metrics": val_point_metrics,
+        "test_point_metrics": test_point_metrics,
     }
     with (run_dir / "summary.json").open("w", encoding="utf-8") as fp:
         json.dump(run_summary, fp, indent=2)

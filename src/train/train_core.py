@@ -23,6 +23,7 @@ class TrainConfig:
     persistent_workers: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     in_channels: int = 1
+    dropout: float = 0.1
     
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
     return {
@@ -186,9 +187,12 @@ def fit(
     
     if cfg.workers < 0:
         raise ValueError("workers must be >= 0")
-    
+
     if cfg.prefetch_factor is not None and cfg.prefetch_factor <= 0:
         raise ValueError("prefetch_factor must be > 0 when provided")
+
+    if not 0.0 <= cfg.dropout < 1.0:
+        raise ValueError("dropout must be in [0.0, 1.0)")
 
     train_loader = build_dataloader(
         dataset=train_dataset,
@@ -208,7 +212,10 @@ def fit(
         persistent_workers=cfg.persistent_workers,
     )
 
-    model = ValveEventCNN(in_channels=cfg.in_channels).to(device)
+    model = ValveEventCNN(
+        in_channels=cfg.in_channels,
+        dropout=cfg.dropout,
+    ).to(device)
     criterion = MaskedBCELoss()
     optimizer = torch.optim.AdamW(
         model.parameters(),

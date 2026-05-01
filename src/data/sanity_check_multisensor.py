@@ -9,7 +9,19 @@ import numpy as np
 from matplotlib.widgets import Button
 from scipy.signal import resample_poly
 
-from .targets import BPConfig, PRPConfig, SPConfig, detect_bp, detect_prp, detect_sp, moving_avg
+from .targets import (
+    BPConfig,
+    MultiSensorBPConfig,
+    MultiSensorSPConfig,
+    PRPConfig,
+    SPConfig,
+    detect_bp,
+    detect_bp_multisensor,
+    detect_prp,
+    detect_sp,
+    detect_sp_multisensor,
+    moving_avg,
+)
 
 
 DEFAULT_PRESSURE_ROOTS = [
@@ -27,7 +39,7 @@ DEFAULT_TWO_SENSOR_ROOTS = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Inspect one multisensor event with pressure-derived PRP/BP/SP markers "
+            "Inspect one multisensor event with PRP from pressure and BP/SP from travel+pressure "
             "shown on pressure, strain, and travel side by side."
         ),
     )
@@ -233,11 +245,12 @@ def _build_signal_views(
         derivative_source = moving_avg(derivative_source, max(1, smooth_window_samples))
 
     first = np.gradient(derivative_source, dt).astype(np.float32) if signal.size > 1 else np.zeros(signal.size, dtype=np.float32)
-    second = np.gradient(first, dt).astype(np.float32) if first.size > 1 else np.zeros(first.size, dtype=np.float32)
+    global_window_samples = max(5, int(round(180.0 * samplerate / 1000.0)))
+    first_global = moving_avg(first, global_window_samples).astype(np.float32)
     return {
         "raw": signal.astype(np.float32),
         "first_derivative": first,
-        "second_derivative": second,
+        "first_derivative_global": first_global,
     }
 
 
@@ -298,6 +311,11 @@ def _attach_strain_smoothing_toggle_button(
             line.set_ydata(current_views[view_key])
             if view_key == "raw":
                 line.set_label("strain raw")
+            elif view_key == "first_derivative_global":
+                if state["smoothed"]:
+                    line.set_label("strain d1 global smoothed (smoothed first)")
+                else:
+                    line.set_label("strain d1 global smoothed")
             elif state["smoothed"]:
                 line.set_label(f"strain {view_key.replace('_', ' ')} (smoothed first)")
             else:
@@ -312,6 +330,39 @@ def _attach_strain_smoothing_toggle_button(
     button.on_clicked(_toggle)
     fig._strain_toggle_button_ax = button_ax
     fig._strain_toggle_button = button
+
+
+def _compute_default_zoom_limits(
+    *,
+    n_samples: int,
+    samplerate: int,
+    prp_index: int | None,
+    bp_index: int | None,
+    sp_index: int | None,
+) -> tuple[float, float]:
+    marker_indices = [index for index in (prp_index, bp_index, sp_index) if index is not None]
+    total_duration = n_samples / float(samplerate)
+
+    if not marker_indices:
+        return 0.0, total_duration
+
+    start_index = min(marker_indices)
+    end_index = max(marker_indices)
+    padding = max(int(round(0.15 * samplerate)), int(round((end_index - start_index) * 0.35)))
+
+    x_min = max(0.0, (start_index - padding) / float(samplerate))
+    x_max = min(total_duration, (end_index + padding) / float(samplerate))
+
+    if x_max - x_min < 1.0:
+        center = 0.5 * (x_min + x_max)
+        x_min = max(0.0, center - 0.5)
+        x_max = min(total_duration, center + 0.5)
+
+    return x_min, x_max
+
+
+def _pressure_to_bar(signal: np.ndarray) -> np.ndarray:
+    return signal.astype(np.float32) / 1e5
 
 
 def inspect_multisensor_event(args: argparse.Namespace) -> None:
@@ -374,18 +425,64 @@ def inspect_multisensor_event(args: argparse.Namespace) -> None:
     sp_cfg = SPConfig()
 
     prp_result = detect_prp(pressure_signal, prp_cfg)
-    bp_result = detect_bp(
-        pressure_signal,
-        samplerate=samplerate,
-        prp_index=prp_result.prp_index,
-        config=bp_cfg,
-    )
-    sp_result = detect_sp(
-        pressure_signal,
-        samplerate=samplerate,
-        prp_index=prp_result.prp_index,
-        config=sp_cfg,
-    )
+    travel_signal = resampled_signals.get("travel")
+    strain_signal = resampled_signals.get("strain")
+    if "travel" in resampled_signals:
+        bp_result = detect_bp_multisensor(
+            pressure_signal=pressure_signal,
+            travel_signal=travel_signal,
+            samplerate=samplerate,
+            prp_index=prp_result.prp_index,
+            strain_signal=strain_signal,
+            pressure_config=bp_cfg,
+            multisensor_config=MultiSensorBPConfig(),
+        )
+    elif "strain" in resampled_signals:
+        bp_result = detect_bp_multisensor(
+            pressure_signal=pressure_signal,
+            travel_signal=None,
+            samplerate=samplerate,
+            prp_index=prp_result.prp_index,
+            strain_signal=strain_signal,
+            pressure_config=bp_cfg,
+            multisensor_config=MultiSensorBPConfig(),
+        )
+    else:
+        bp_result = detect_bp(
+            pressure_signal,
+            samplerate=samplerate,
+            prp_index=prp_result.prp_index,
+            config=bp_cfg,
+        )
+    if "travel" in resampled_signals:
+        sp_result = detect_sp_multisensor(
+            pressure_signal=pressure_signal,
+            travel_signal=travel_signal,
+            samplerate=samplerate,
+            prp_index=prp_result.prp_index,
+            bp_index=bp_result.bp_index,
+            strain_signal=strain_signal,
+            pressure_config=sp_cfg,
+            multisensor_config=MultiSensorSPConfig(),
+        )
+    elif "strain" in resampled_signals:
+        sp_result = detect_sp_multisensor(
+            pressure_signal=pressure_signal,
+            travel_signal=None,
+            samplerate=samplerate,
+            prp_index=prp_result.prp_index,
+            bp_index=bp_result.bp_index,
+            strain_signal=strain_signal,
+            pressure_config=sp_cfg,
+            multisensor_config=MultiSensorSPConfig(),
+        )
+    else:
+        sp_result = detect_sp(
+            pressure_signal,
+            samplerate=samplerate,
+            prp_index=prp_result.prp_index,
+            config=sp_cfg,
+        )
 
     print("Event")
     print(" path       ", event["path"])
@@ -398,7 +495,7 @@ def inspect_multisensor_event(args: argparse.Namespace) -> None:
     print(" samplerate ", samplerate)
     print(" sensors    ", ", ".join(sorted(event["signals"])))
     print()
-    print("Pressure-derived markers")
+    print("Markers")
     print(" PRP", prp_result.prp_index, prp_result.reason)
     print(" BP ", bp_result.bp_index, bp_result.reason)
     print(" SP ", sp_result.sp_index, sp_result.reason)
@@ -411,9 +508,9 @@ def inspect_multisensor_event(args: argparse.Namespace) -> None:
 
     time_axis = np.arange(n_samples, dtype=np.float32) / float(samplerate)
     view_specs = (
-        ("raw", "Raw"),
-        ("first_derivative", "1st Derivative"),
-        ("second_derivative", "2nd Derivative"),
+        ("raw", "Raw and Resampled Signal"),
+        ("first_derivative", "First Derivative"),
+        ("first_derivative_global", "First Derivative - Global Smoothed View"),
     )
     sensor_names = ("pressure", "strain", "travel")
     fig, axes = plt.subplots(3, 3, figsize=(18, 11), sharex=True)
@@ -447,12 +544,19 @@ def inspect_multisensor_event(args: argparse.Namespace) -> None:
             smooth_before_derivative=(sensor_name == "strain"),
             smooth_window_samples=prp_cfg.smooth_samples,
         )
+        if sensor_name == "pressure":
+            signal_views["raw"] = _pressure_to_bar(signal_views["raw"])
 
         for col_index, (view_key, column_title) in enumerate(view_specs):
             ax = axes[row_index, col_index]
-            line_label = f"{sensor_name} {column_title.lower()}"
-            if sensor_name == "strain" and view_key != "raw":
-                line_label = f"{sensor_name} {view_key.replace('_', ' ')} (smoothed first)"
+            if view_key == "raw":
+                line_label = f"{sensor_name} resampled"
+            elif view_key == "first_derivative_global":
+                line_label = f"{sensor_name} d1 global smoothed"
+            else:
+                line_label = f"{sensor_name} d1"
+            if sensor_name == "strain" and view_key in {"first_derivative", "first_derivative_global"}:
+                line_label = f"{line_label} (smoothed first)"
             ax.plot(
                 time_axis,
                 signal_views[view_key],
@@ -461,6 +565,9 @@ def inspect_multisensor_event(args: argparse.Namespace) -> None:
                 alpha=0.9,
                 label=line_label,
             )
+
+            if view_key != "raw":
+                ax.axhline(0.0, linestyle="--", alpha=0.5, color="black", label="zero")
 
             for label, index, color in marker_specs:
                 if index is None:
@@ -474,20 +581,42 @@ def inspect_multisensor_event(args: argparse.Namespace) -> None:
                 )
                 marker_lines.append(marker_line)
 
+            if sp_result.start_index is not None and sp_result.end_index is not None:
+                ax.axvspan(
+                    sp_result.start_index / float(samplerate),
+                    sp_result.end_index / float(samplerate),
+                    alpha=0.15,
+                    color="green",
+                    label="SP region",
+                )
+
             if row_index == 0:
                 ax.set_title(column_title)
             if col_index == 0:
-                ax.set_ylabel(sensor_name)
+                ylabel = sensor_name
+                if sensor_name == "pressure" and view_key == "raw":
+                    ylabel = "pressure (bar)"
+                ax.set_ylabel(ylabel)
             ax.grid(True, alpha=0.3)
             ax.legend(loc="upper right")
             if sensor_name == "strain":
                 strain_axes[view_key] = ax
 
     fig.suptitle(
-        "Multisensor inspection with PRP/BP/SP derived from pressure\n"
+        "Multisensor inspection with PRP/SP from pressure and BP from travel+pressure\n"
         f"site={event['sitename']} | tag={event['valvetag']} | event={event['eventid']} | samplerate={samplerate}",
         y=0.99,
     )
+    x_min, x_max = _compute_default_zoom_limits(
+        n_samples=n_samples,
+        samplerate=samplerate,
+        prp_index=prp_result.prp_index,
+        bp_index=bp_result.bp_index,
+        sp_index=sp_result.sp_index,
+    )
+    for row in axes:
+        for ax in row:
+            ax.set_xlim(x_min, x_max)
     for ax in axes[-1, :]:
         ax.set_xlabel("time (s)")
 

@@ -23,7 +23,7 @@ class MultiSensorValveDataset(Dataset):
         dataset_root: str | Path,
         *,
         preprocessor: EventProcessor | None = None,
-        target_builder: Callable[[ProcessedEvent], torch.Tensor],
+        target_builder: Callable[..., torch.Tensor],
         skip_flat_signals: bool = True,
         min_std: float = 1e-12,
         max_duration_mismatch_sec: float = 0.025,
@@ -126,7 +126,7 @@ class MultiSensorValveDataset(Dataset):
 
             x_np = np.stack(channel_arrays, axis=0).astype(np.float32)
             x = torch.from_numpy(x_np).to(torch.float32)
-            y = self.target_builder(pressure_for_targets).to(torch.float32)
+            y = self.target_builder(pressure_for_targets, processed_by_sensor).to(torch.float32)
 
         except Exception as exc:
             self.skipped_reasons[type(exc).__name__] += 1

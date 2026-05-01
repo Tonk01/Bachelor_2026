@@ -78,6 +78,21 @@ class BPConfig:
     motion_threshold_ratio: float = 0.35
     motion_reference_window_ms: float = 500.0
 
+
+@dataclass(frozen=True)
+class MultiSensorBPConfig:
+    search_start_offset_ms: float = 60.0
+    search_end_ratio: float = 0.75
+    travel_smooth_ms: float = 25.0
+    sustain_window_ms: float = 80.0
+    net_drop_window_ms: float = 200.0
+    onset_threshold_ratio: float = 0.20
+    sustain_threshold_ratio: float = 0.15
+    min_net_drop_ratio: float = 0.03
+    max_pressure_bp_shift_ms: float = 800.0
+    consensus_window_ms: float = 600.0
+    fallback_to_pressure_bp: bool = True
+
 @dataclass(frozen = True)
 class BPResult:
     start_index: int | None
@@ -92,6 +107,22 @@ class SPConfig:
     smooth_ms: float = 10.0
     min_peak_motion: float = 1e-6
     min_sp_delay_ms: float = 100.0
+
+
+@dataclass(frozen=True)
+class MultiSensorSPConfig:
+    search_start_offset_ms: float = 80.0
+    search_end_ratio: float = 0.95
+    travel_smooth_ms: float = 25.0
+    motion_window_ms: float = 200.0
+    sustain_window_ms: float = 80.0
+    plateau_window_ms: float = 150.0
+    motion_threshold_ratio: float = 0.25
+    plateau_threshold_ratio: float = 0.12
+    max_settle_motion_ratio: float = 0.02
+    max_pressure_sp_shift_ms: float = 1200.0
+    consensus_window_ms: float = 700.0
+    fallback_to_pressure_sp: bool = True
 
 
 @dataclass(frozen = True)
@@ -653,6 +684,192 @@ def detect_bp(
     return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="no bp found")
 
 
+def detect_bp_multisensor(
+    pressure_signal: np.ndarray,
+    travel_signal: np.ndarray | None,
+    samplerate: int,
+    prp_index: int | None,
+    strain_signal: np.ndarray | None = None,
+    pressure_config: BPConfig | None = None,
+    multisensor_config: MultiSensorBPConfig | None = None,
+    shared_pressure: SharedSignalFeatures | None = None,
+) -> BPResult:
+    pressure_bp = detect_bp(
+        pressure_signal,
+        samplerate=samplerate,
+        prp_index=prp_index,
+        config=pressure_config,
+        shared=shared_pressure,
+    )
+
+    cfg = multisensor_config or MultiSensorBPConfig()
+
+    if prp_index is None:
+        return pressure_bp
+
+    if samplerate <= 0:
+        raise ValueError("samplerate must be more than 0")
+
+    smooth_n = ms_to_samples(cfg.travel_smooth_ms, samplerate, minimum=3)
+    sustain_n = ms_to_samples(cfg.sustain_window_ms, samplerate, minimum=3)
+    net_motion_n = ms_to_samples(cfg.net_drop_window_ms, samplerate, minimum=3)
+    offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
+    max_shift_n = ms_to_samples(cfg.max_pressure_bp_shift_ms, samplerate)
+    def _main_motion_region(motion_signal: np.ndarray) -> tuple[int, int, np.ndarray, np.ndarray, bool, float, float] | None:
+        motion = validate_signal_1d(motion_signal)
+        search_start = max(prp_index + offset_n, 1)
+        search_end = min(int(round(motion.size * cfg.search_end_ratio)), motion.size - 1)
+
+        if pressure_bp.bp_index is not None:
+            search_end = min(search_end, pressure_bp.bp_index + max_shift_n)
+
+        if search_end <= search_start + sustain_n:
+            return None
+
+        smooth_motion = moving_avg(motion.astype(np.float32), smooth_n)
+        d1_motion = np.gradient(smooth_motion).astype(np.float32)
+        motion_window = smooth_motion[search_start:search_end]
+        window_net_motion = float(motion_window[-1] - motion_window[0]) if motion_window.size >= 2 else 0.0
+        positive_direction = window_net_motion >= 0.0
+
+        direction_strength = (
+            np.maximum(d1_motion, 0.0).astype(np.float32)
+            if positive_direction
+            else np.maximum(-d1_motion, 0.0).astype(np.float32)
+        )
+
+        strength_window = direction_strength[search_start:search_end]
+        if strength_window.size == 0:
+            return None
+
+        reference_peak = float(np.max(strength_window))
+        if reference_peak <= 0.0:
+            return None
+
+        onset_threshold = cfg.onset_threshold_ratio * reference_peak
+        motion_range = float(np.max(smooth_motion[search_start:search_end]) - np.min(smooth_motion[search_start:search_end]))
+        min_net_drop = cfg.min_net_drop_ratio * max(motion_range, 1e-8)
+
+        motion_mask = strength_window >= onset_threshold
+        regions = build_regions_with_stats(motion_mask, strength_window)
+        valid_regions: list[PRPRegion] = []
+
+        for region in regions:
+            region_start = search_start + region.start_index
+            region_end = search_start + region.end_index
+
+            if region_end - region_start + 1 < sustain_n:
+                continue
+            if region_start + net_motion_n >= motion.size:
+                continue
+
+            net_motion = float(smooth_motion[region_start + net_motion_n] - smooth_motion[region_start])
+            if positive_direction:
+                if net_motion < min_net_drop:
+                    continue
+            else:
+                if net_motion > -min_net_drop:
+                    continue
+
+            valid_regions.append(region)
+
+        if not valid_regions:
+            return None
+
+        main_region = max(valid_regions, key=lambda r: (r.area_strength, r.peak_strength, -r.start_index))
+        main_start = search_start + main_region.start_index
+        main_end = search_start + main_region.end_index
+        confidence = float(
+            np.clip(main_region.area_strength / (sum(r.area_strength for r in valid_regions) + 1e-8), 0.0, 1.0)
+        )
+        return main_start, main_end, smooth_motion, direction_strength, positive_direction, onset_threshold, confidence
+
+    def _strain_shift_inside_region(
+        smooth_strain: np.ndarray,
+        region_start: int,
+        region_end: int,
+    ) -> int | None:
+        if region_end <= region_start + sustain_n:
+            return None
+
+        d1_strain = np.gradient(smooth_strain).astype(np.float32)
+        local_window = d1_strain[region_start:region_end + 1]
+        if local_window.size < sustain_n:
+            return None
+
+        positive_direction = float(smooth_strain[region_end] - smooth_strain[region_start]) >= 0.0
+        direction_strength = (
+            np.maximum(d1_strain, 0.0).astype(np.float32)
+            if positive_direction
+            else np.maximum(-d1_strain, 0.0).astype(np.float32)
+        )
+        local_strength = direction_strength[region_start:region_end + 1]
+        peak = float(np.max(local_strength))
+        if peak <= 0.0:
+            return None
+
+        threshold = max(cfg.onset_threshold_ratio * peak, 0.35 * peak)
+        upper_bound = region_end - sustain_n + 1
+        for i in range(region_start, upper_bound + 1):
+            if float(direction_strength[i]) < threshold:
+                continue
+            sustain_slice = direction_strength[i:i + sustain_n]
+            if sustain_slice.size < sustain_n:
+                continue
+            if float(np.mean(sustain_slice)) < 0.75 * threshold:
+                continue
+            return i
+        return None
+
+    travel_region = _main_motion_region(travel_signal) if travel_signal is not None else None
+    if travel_region is not None:
+        region_start, region_end, smooth_travel, direction_strength, positive_direction, onset_threshold, confidence = travel_region
+        if strain_signal is not None:
+            smooth_strain = moving_avg(validate_signal_1d(strain_signal).astype(np.float32), smooth_n)
+            strain_candidate = _strain_shift_inside_region(smooth_strain, region_start, region_end)
+            if strain_candidate is not None:
+                direction_label = "positive" if positive_direction else "negative"
+                return BPResult(
+                    start_index=region_start,
+                    end_index=region_end,
+                    bp_index=strain_candidate,
+                    confidence=confidence,
+                    reason=f"strain shift selected inside travel main {direction_label} motion region",
+                )
+
+        upper_bound = min(region_end, len(direction_strength) - sustain_n)
+        for i in range(region_start, upper_bound + 1):
+            if float(direction_strength[i]) < onset_threshold:
+                continue
+            sustain_slice = direction_strength[i:i + sustain_n]
+            if sustain_slice.size < sustain_n:
+                continue
+            if float(np.mean(sustain_slice)) < cfg.sustain_threshold_ratio * float(np.max(direction_strength[region_start:region_end + 1])):
+                continue
+            direction_label = "positive" if positive_direction else "negative"
+            return BPResult(
+                start_index=region_start,
+                end_index=region_end,
+                bp_index=i,
+                confidence=confidence,
+                reason=f"travel main {direction_label} motion region onset used for bp",
+            )
+
+    strain_region = _main_motion_region(strain_signal) if strain_signal is not None else None
+    if strain_region is not None:
+        region_start, region_end, _smooth, _strength, positive_direction, _threshold, confidence = strain_region
+        direction_label = "positive" if positive_direction else "negative"
+        return BPResult(
+            start_index=region_start,
+            end_index=region_end,
+            bp_index=region_start,
+            confidence=confidence,
+            reason=f"strain main {direction_label} motion region onset used as bp fallback",
+        )
+
+    return pressure_bp
+
+
 # -------- SP Detection ------- # 
 
 def detect_sp(
@@ -872,6 +1089,205 @@ def detect_sp(
             confidence=confidence,
             reason="selected rightmost significant positive bump",
         )
+
+
+def detect_sp_multisensor(
+    pressure_signal: np.ndarray,
+    travel_signal: np.ndarray | None,
+    samplerate: int,
+    prp_index: int | None,
+    bp_index: int | None,
+    strain_signal: np.ndarray | None = None,
+    pressure_config: SPConfig | None = None,
+    multisensor_config: MultiSensorSPConfig | None = None,
+    shared_pressure: SharedSignalFeatures | None = None,
+) -> SPResult:
+    pressure_sp = detect_sp(
+        pressure_signal,
+        samplerate=samplerate,
+        prp_index=prp_index,
+        config=pressure_config,
+        shared=shared_pressure,
+    )
+
+    cfg = multisensor_config or MultiSensorSPConfig()
+
+    if prp_index is None:
+        return pressure_sp
+
+    if samplerate <= 0:
+        raise ValueError("samplerate must be above 0")
+
+    smooth_n = ms_to_samples(cfg.travel_smooth_ms, samplerate, minimum=3)
+    motion_n = ms_to_samples(cfg.motion_window_ms, samplerate, minimum=3)
+    sustain_n = ms_to_samples(cfg.sustain_window_ms, samplerate, minimum=3)
+    plateau_n = ms_to_samples(cfg.plateau_window_ms, samplerate, minimum=3)
+    offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
+    max_shift_n = ms_to_samples(cfg.max_pressure_sp_shift_ms, samplerate)
+    def _settle_region(motion_signal: np.ndarray) -> tuple[int, int, np.ndarray, np.ndarray, bool, float, float] | None:
+        motion = validate_signal_1d(motion_signal)
+        search_anchor = bp_index if bp_index is not None else prp_index
+        search_start = max(search_anchor + offset_n, 1)
+        search_end = min(int(round(motion.size * cfg.search_end_ratio)), motion.size - 1)
+
+        if pressure_sp.sp_index is not None:
+            search_end = min(search_end, pressure_sp.sp_index + max_shift_n)
+
+        if search_end <= search_start + max(motion_n, plateau_n):
+            return None
+
+        smooth_motion = moving_avg(motion.astype(np.float32), smooth_n)
+        d1_motion = np.gradient(smooth_motion).astype(np.float32)
+
+        direction_window = smooth_motion[search_start:search_end]
+        if direction_window.size < 2:
+            return None
+
+        window_net_motion = float(direction_window[-1] - direction_window[0])
+        positive_direction = window_net_motion >= 0.0
+
+        direction_strength = (
+            np.maximum(d1_motion, 0.0).astype(np.float32)
+            if positive_direction
+            else np.maximum(-d1_motion, 0.0).astype(np.float32)
+        )
+        strength_window = direction_strength[search_start:search_end]
+        if strength_window.size == 0:
+            return None
+
+        reference_peak = float(np.max(strength_window))
+        if reference_peak <= 0.0:
+            return None
+
+        motion_threshold = cfg.motion_threshold_ratio * reference_peak
+        motion_range = float(np.max(direction_window) - np.min(direction_window))
+        max_settle_motion = cfg.max_settle_motion_ratio * max(motion_range, 1e-8)
+
+        motion_start: int | None = None
+        motion_peak_index: int | None = None
+        upper_motion_bound = min(search_end - sustain_n - 1, motion.size - 2)
+
+        for i in range(search_start, upper_motion_bound + 1):
+            if float(direction_strength[i]) < motion_threshold:
+                continue
+            sustain_slice = direction_strength[i:i + sustain_n]
+            if sustain_slice.size < sustain_n:
+                continue
+            if float(np.mean(sustain_slice)) < motion_threshold:
+                continue
+            motion_start = i
+            local_peak_offset = int(np.argmax(direction_strength[i:search_end]))
+            motion_peak_index = i + local_peak_offset
+            break
+
+        if motion_start is None or motion_peak_index is None:
+            return None
+
+        settle_start = max(motion_peak_index + 1, motion_start + sustain_n // 2)
+        upper_plateau_bound = min(search_end - plateau_n - 1, motion.size - plateau_n - 1)
+        for i in range(settle_start, upper_plateau_bound + 1):
+            plateau_slice = direction_strength[i:i + plateau_n]
+            if plateau_slice.size < plateau_n:
+                continue
+            plateau_threshold = cfg.plateau_threshold_ratio * reference_peak
+            if float(np.mean(plateau_slice)) > plateau_threshold:
+                continue
+            if float(np.max(plateau_slice)) > motion_threshold:
+                continue
+
+            net_motion = float(smooth_motion[i + plateau_n] - smooth_motion[i])
+            if positive_direction:
+                if net_motion > max_settle_motion:
+                    continue
+            else:
+                if net_motion < -max_settle_motion:
+                    continue
+
+            confidence = float(
+                np.clip(
+                    1.0 - (float(np.mean(plateau_slice)) / (reference_peak + 1e-8)),
+                    0.0,
+                    1.0,
+                )
+            )
+            region_end = i + plateau_n - 1
+            return i, region_end, smooth_motion, direction_strength, positive_direction, reference_peak, confidence
+
+        return None
+
+    def _strain_settle_inside_region(
+        smooth_strain: np.ndarray,
+        region_start: int,
+        region_end: int,
+    ) -> int | None:
+        if region_end <= region_start + plateau_n:
+            return None
+
+        d1_strain = np.gradient(smooth_strain).astype(np.float32)
+        local_window = d1_strain[region_start:region_end + 1]
+        if local_window.size < plateau_n:
+            return None
+
+        positive_direction = float(smooth_strain[region_end] - smooth_strain[region_start]) >= 0.0
+        direction_strength = (
+            np.maximum(d1_strain, 0.0).astype(np.float32)
+            if positive_direction
+            else np.maximum(-d1_strain, 0.0).astype(np.float32)
+        )
+        local_strength = direction_strength[region_start:region_end + 1]
+        peak = float(np.max(local_strength))
+        if peak <= 0.0:
+            return None
+
+        plateau_threshold = cfg.plateau_threshold_ratio * peak
+        upper_bound = region_end - plateau_n + 1
+        for i in range(region_start, upper_bound + 1):
+            plateau_slice = direction_strength[i:i + plateau_n]
+            if plateau_slice.size < plateau_n:
+                continue
+            if float(np.mean(plateau_slice)) > plateau_threshold:
+                continue
+            return i
+        return None
+
+    travel_region = _settle_region(travel_signal) if travel_signal is not None else None
+    if travel_region is not None:
+        region_start, region_end, _smooth, _strength, positive_direction, _reference_peak, confidence = travel_region
+        if strain_signal is not None:
+            smooth_strain = moving_avg(validate_signal_1d(strain_signal).astype(np.float32), smooth_n)
+            strain_candidate = _strain_settle_inside_region(smooth_strain, region_start, region_end)
+            if strain_candidate is not None:
+                direction_label = "positive" if positive_direction else "negative"
+                return SPResult(
+                    start_index=region_start,
+                    end_index=region_end,
+                    sp_index=strain_candidate,
+                    confidence=confidence,
+                    reason=f"strain settling selected inside travel {direction_label} plateau region",
+                )
+
+        direction_label = "positive" if positive_direction else "negative"
+        return SPResult(
+            start_index=region_start,
+            end_index=region_end,
+            sp_index=region_start,
+            confidence=confidence,
+            reason=f"travel {direction_label} motion settled into plateau region used for sp",
+        )
+
+    strain_region = _settle_region(strain_signal) if strain_signal is not None else None
+    if strain_region is not None:
+        region_start, region_end, _smooth, _strength, positive_direction, _reference_peak, confidence = strain_region
+        direction_label = "positive" if positive_direction else "negative"
+        return SPResult(
+            start_index=region_start,
+            end_index=region_end,
+            sp_index=region_start,
+            confidence=confidence,
+            reason=f"strain {direction_label} plateau region used as sp fallback",
+        )
+
+    return pressure_sp
         
 # ------------ Target builders --------- #
 
