@@ -46,6 +46,7 @@ EPOCHS = 5
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
 DROPOUT = 0.1
+MODEL_TYPE = "cnn"
 TRAIN_FRAC = 0.70
 VAL_FRAC = 0.15
 TEST_FRAC = 0.15
@@ -56,7 +57,7 @@ WORKERS = max(1, min(4, (os.cpu_count() or 1) // 2 or 1))
 PREFETCH_FACTOR = 2
 SENSOR_SAMPLERATES = (10, 50, 200, 250, 400, 800, 1000, 2000)
 CACHE_NAME = "valve-3sensor-v1"
-CACHE_TARGET_VERSION = 7
+CACHE_TARGET_VERSION = 10
 POINT_NAMES = ("PRP", "BP", "SP")
 TIME_TOLERANCES_SEC = (0.05, 0.1, 0.2)
 
@@ -95,8 +96,8 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _default_cache_dir() -> Path:
-    return PROJECT_ROOT / "data" / "cache" / CACHE_NAME
+def _default_cache_dir(cache_name: str = CACHE_NAME) -> Path:
+    return PROJECT_ROOT / "data" / "cache" / cache_name
 
 
 def _set_seed(seed: int) -> None:
@@ -271,6 +272,7 @@ def main() -> None:
     learning_rate = _env_float("LEARNING_RATE", LEARNING_RATE)
     weight_decay = _env_float("WEIGHT_DECAY", WEIGHT_DECAY)
     dropout = _env_float("DROPOUT", DROPOUT)
+    model_type = os.getenv("MODEL_TYPE", MODEL_TYPE).strip().lower()
     workers = _env_int("WORKERS", WORKERS)
     prefetch_factor = _env_int("PREFETCH_FACTOR", PREFETCH_FACTOR)
 
@@ -281,10 +283,13 @@ def main() -> None:
     max_val_samples = _env_int("MAX_VAL_SAMPLES", MAX_VAL_SAMPLES)
     max_test_samples = _env_int("MAX_TEST_SAMPLES", MAX_TEST_SAMPLES)
     dataset_root = _env_path("MULTISENSOR_DATASET_PATH", DEFAULT_DATASET_PATH)
+    cache_name = os.getenv("CACHE_NAME", CACHE_NAME).strip()
+    if not cache_name:
+        raise ValueError("CACHE_NAME must be non-empty")
     use_cache = _env_bool("USE_CACHE", True)
     rebuild_cache = _env_bool("REBUILD_CACHE", False)
     cache_only = _env_bool("CACHE_ONLY", False)
-    cache_dir = Path(os.getenv("CACHE_DIR", str(_default_cache_dir())))
+    cache_dir = Path(os.getenv("CACHE_DIR", str(_default_cache_dir(cache_name))))
     if cache_only and not use_cache:
         raise ValueError("CACHE_ONLY=1 requires USE_CACHE=1")
 
@@ -293,12 +298,13 @@ def main() -> None:
     print("Valve Event Detection - 3 Sensor")
     print("Project root:", PROJECT_ROOT)
     print("Dataset path:", dataset_root)
+    print("Cache name:", cache_name)
 
     preprocessor = EventProcessor(
         PreprocessingConfig(allowed_samplerate=SENSOR_SAMPLERATES)
     )
     expected_cache_meta = {
-        "cache_name": CACHE_NAME,
+        "cache_name": cache_name,
         "mode": "3sensor",
         "dataset_root": str(dataset_root),
         "in_channels": 3,
@@ -428,12 +434,13 @@ def main() -> None:
         prefetch_factor=prefetch_factor,
         in_channels=3,
         dropout=dropout,
+        model_type=model_type,
     )
 
     artifacts_dir = PROJECT_ROOT / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     run_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = artifacts_dir / f"valve-cnn-3sensor-{run_timestamp}"
+    run_dir = artifacts_dir / f"valve-{model_type}-3sensor-{run_timestamp}"
     run_dir.mkdir(parents=True, exist_ok=False)
 
     if use_cache:
@@ -480,9 +487,11 @@ def main() -> None:
         "learning_rate": learning_rate,
         "weight_decay": weight_decay,
         "dropout": dropout,
+        "model_type": model_type,
         "workers": workers,
         "prefetch_factor": prefetch_factor,
         "use_cache": use_cache,
+        "cache_name": cache_name,
         "cache_dir": str(cache_dir) if use_cache else None,
         "dataset_path": str(dataset_root),
         "total_samples": int(n_total) if n_total is not None else None,

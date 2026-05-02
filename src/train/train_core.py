@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from src.data.collate import valve_collate
 from src.models.CNN_model import ValveEventCNN
+from src.models.TCN_model import ValveEventTCN
 from src.data.sampler import BucketBatchSampler
 from src.train.loss import MaskedBCELoss
 
@@ -24,6 +25,7 @@ class TrainConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     in_channels: int = 1
     dropout: float = 0.1
+    model_type: str = "cnn"
     
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
     return {
@@ -194,6 +196,9 @@ def fit(
     if not 0.0 <= cfg.dropout < 1.0:
         raise ValueError("dropout must be in [0.0, 1.0)")
 
+    if cfg.model_type not in ("cnn", "tcn"):
+        raise ValueError("model_type must be 'cnn' or 'tcn'")
+
     train_loader = build_dataloader(
         dataset=train_dataset,
         batch_size=cfg.batch_size,
@@ -212,10 +217,8 @@ def fit(
         persistent_workers=cfg.persistent_workers,
     )
 
-    model = ValveEventCNN(
-        in_channels=cfg.in_channels,
-        dropout=cfg.dropout,
-    ).to(device)
+    model_cls = ValveEventTCN if cfg.model_type == "tcn" else ValveEventCNN
+    model = model_cls(in_channels=cfg.in_channels, dropout=cfg.dropout).to(device)
     criterion = MaskedBCELoss()
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -224,6 +227,7 @@ def fit(
     )
 
     print("Using device", device)
+    print("Model type", cfg.model_type)
     if device.type == "cuda":
         print("GPU", torch.cuda.get_device_name(0))
     print(
