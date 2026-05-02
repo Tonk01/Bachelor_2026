@@ -86,9 +86,11 @@ class MultiSensorBPConfig:
     travel_smooth_ms: float = 25.0
     sustain_window_ms: float = 80.0
     net_drop_window_ms: float = 200.0
+    slow_ramp_window_ms: float = 1000.0
     onset_threshold_ratio: float = 0.20
     sustain_threshold_ratio: float = 0.15
     min_net_drop_ratio: float = 0.03
+    slow_ramp_min_net_motion_ratio: float = 0.03
     max_pressure_bp_shift_ms: float = 800.0
     consensus_window_ms: float = 600.0
     fallback_to_pressure_bp: bool = True
@@ -117,11 +119,20 @@ class MultiSensorSPConfig:
     motion_window_ms: float = 200.0
     sustain_window_ms: float = 80.0
     plateau_window_ms: float = 150.0
+    candidate_stride_ms: float = 25.0
     motion_threshold_ratio: float = 0.25
     plateau_threshold_ratio: float = 0.12
     max_settle_motion_ratio: float = 0.02
     max_pressure_sp_shift_ms: float = 1200.0
     consensus_window_ms: float = 700.0
+    min_travel_slowdown_score: float = 0.55
+    early_candidate_score_ratio: float = 0.92
+    post_sp_verify_window_ms: float = 10000.0
+    post_sp_max_motion_ratio: float = 0.20
+    post_sp_min_motion: float = 0.03
+    post_sp_small_range_threshold: float = 0.35
+    post_sp_tail_window_ms: float = 20000.0
+    post_sp_tail_motion_ratio: float = 0.20
     fallback_to_pressure_sp: bool = True
 
 
@@ -713,6 +724,7 @@ def detect_bp_multisensor(
     smooth_n = ms_to_samples(cfg.travel_smooth_ms, samplerate, minimum=3)
     sustain_n = ms_to_samples(cfg.sustain_window_ms, samplerate, minimum=3)
     net_motion_n = ms_to_samples(cfg.net_drop_window_ms, samplerate, minimum=3)
+    slow_ramp_n = ms_to_samples(cfg.slow_ramp_window_ms, samplerate, minimum=3)
     offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
     max_shift_n = ms_to_samples(cfg.max_pressure_bp_shift_ms, samplerate)
     def _main_motion_region(motion_signal: np.ndarray) -> tuple[int, int, np.ndarray, np.ndarray, bool, float, float] | None:
@@ -821,6 +833,53 @@ def detect_bp_multisensor(
             return i
         return None
 
+    def _slow_travel_ramp_onset(motion_signal: np.ndarray) -> BPResult | None:
+        motion = validate_signal_1d(motion_signal)
+        search_start = max(prp_index + offset_n, 1)
+        search_end = min(int(round(motion.size * cfg.search_end_ratio)), motion.size - 1)
+
+        if search_end <= search_start + slow_ramp_n:
+            return None
+
+        smooth_motion = moving_avg(motion.astype(np.float32), smooth_n)
+        motion_window = smooth_motion[search_start:search_end]
+        motion_range = float(np.max(motion_window) - np.min(motion_window))
+        if motion_range <= 0.0:
+            return None
+
+        net_motion = float(motion_window[-1] - motion_window[0])
+        positive_direction = net_motion >= 0.0
+        min_net_motion = cfg.slow_ramp_min_net_motion_ratio * motion_range
+        baseline = float(np.median(smooth_motion[search_start:search_start + sustain_n]))
+
+        upper_bound = min(search_end - slow_ramp_n, motion.size - slow_ramp_n - 1)
+        for i in range(search_start, upper_bound + 1):
+            local_net_motion = float(smooth_motion[i + slow_ramp_n] - smooth_motion[i])
+            displacement_from_baseline = float(smooth_motion[i] - baseline)
+
+            if positive_direction:
+                if local_net_motion < min_net_motion:
+                    continue
+                if displacement_from_baseline > 0.15 * motion_range:
+                    continue
+            else:
+                if local_net_motion > -min_net_motion:
+                    continue
+                if displacement_from_baseline < -0.15 * motion_range:
+                    continue
+
+            direction_label = "positive" if positive_direction else "negative"
+            confidence = float(np.clip(abs(local_net_motion) / (motion_range + 1e-8), 0.0, 1.0))
+            return BPResult(
+                start_index=i,
+                end_index=min(i + slow_ramp_n, motion.size - 1),
+                bp_index=i,
+                confidence=confidence,
+                reason=f"travel slow {direction_label} ramp onset used for bp",
+            )
+
+        return None
+
     travel_region = _main_motion_region(travel_signal) if travel_signal is not None else None
     if travel_region is not None:
         region_start, region_end, smooth_travel, direction_strength, positive_direction, onset_threshold, confidence = travel_region
@@ -854,6 +913,11 @@ def detect_bp_multisensor(
                 confidence=confidence,
                 reason=f"travel main {direction_label} motion region onset used for bp",
             )
+
+    if travel_signal is not None:
+        slow_travel_ramp = _slow_travel_ramp_onset(travel_signal)
+        if slow_travel_ramp is not None:
+            return slow_travel_ramp
 
     strain_region = _main_motion_region(strain_signal) if strain_signal is not None else None
     if strain_region is not None:
@@ -1122,16 +1186,23 @@ def detect_sp_multisensor(
     motion_n = ms_to_samples(cfg.motion_window_ms, samplerate, minimum=3)
     sustain_n = ms_to_samples(cfg.sustain_window_ms, samplerate, minimum=3)
     plateau_n = ms_to_samples(cfg.plateau_window_ms, samplerate, minimum=3)
+    candidate_stride_n = ms_to_samples(cfg.candidate_stride_ms, samplerate, minimum=1)
+    post_sp_verify_n = ms_to_samples(cfg.post_sp_verify_window_ms, samplerate, minimum=3)
+    post_sp_tail_n = ms_to_samples(cfg.post_sp_tail_window_ms, samplerate, minimum=3)
     offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
-    max_shift_n = ms_to_samples(cfg.max_pressure_sp_shift_ms, samplerate)
-    def _settle_region(motion_signal: np.ndarray) -> tuple[int, int, np.ndarray, np.ndarray, bool, float, float] | None:
+    travel_candidate_rejected_after_motion = False
+
+    def _settle_region(
+        motion_signal: np.ndarray,
+        *,
+        require_post_sp_quiet: bool = False,
+    ) -> tuple[int, int, np.ndarray, np.ndarray, bool, float, float] | None:
+        nonlocal travel_candidate_rejected_after_motion
+
         motion = validate_signal_1d(motion_signal)
         search_anchor = bp_index if bp_index is not None else prp_index
         search_start = max(search_anchor + offset_n, 1)
         search_end = min(int(round(motion.size * cfg.search_end_ratio)), motion.size - 1)
-
-        if pressure_sp.sp_index is not None:
-            search_end = min(search_end, pressure_sp.sp_index + max_shift_n)
 
         if search_end <= search_start + max(motion_n, plateau_n):
             return None
@@ -1164,7 +1235,6 @@ def detect_sp_multisensor(
         max_settle_motion = cfg.max_settle_motion_ratio * max(motion_range, 1e-8)
 
         motion_start: int | None = None
-        motion_peak_index: int | None = None
         upper_motion_bound = min(search_end - sustain_n - 1, motion.size - 2)
 
         for i in range(search_start, upper_motion_bound + 1):
@@ -1176,23 +1246,59 @@ def detect_sp_multisensor(
             if float(np.mean(sustain_slice)) < motion_threshold:
                 continue
             motion_start = i
-            local_peak_offset = int(np.argmax(direction_strength[i:search_end]))
-            motion_peak_index = i + local_peak_offset
             break
 
-        if motion_start is None or motion_peak_index is None:
+        if motion_start is None:
             return None
 
-        settle_start = max(motion_peak_index + 1, motion_start + sustain_n // 2)
+        def _support_derivative(support_signal: np.ndarray | None) -> tuple[np.ndarray, float] | None:
+            if support_signal is None:
+                return None
+
+            support = validate_signal_1d(support_signal)
+            smooth_support = moving_avg(support.astype(np.float32), smooth_n)
+            d1_support = np.gradient(smooth_support).astype(np.float32)
+            support_window = np.abs(d1_support[search_start:search_end]).astype(np.float32)
+            if support_window.size == 0:
+                return None
+
+            reference = float(np.percentile(support_window, 90)) + 1e-8
+            return d1_support, reference
+
+        def _support_score(support_features: tuple[np.ndarray, float] | None, candidate_index: int) -> float:
+            if support_features is None:
+                return 0.0
+
+            d1_support, reference = support_features
+            if candidate_index + plateau_n >= d1_support.size:
+                return 0.0
+
+            local_motion = float(np.mean(np.abs(d1_support[candidate_index:candidate_index + plateau_n])))
+            return float(np.clip(1.0 - (local_motion / reference), 0.0, 1.0))
+
+        pressure_support = _support_derivative(pressure_signal)
+        strain_support = _support_derivative(strain_signal)
+
+        candidates: list[tuple[float, int, int, float]] = []
+        settle_start = max(motion_start + sustain_n, search_start)
         upper_plateau_bound = min(search_end - plateau_n - 1, motion.size - plateau_n - 1)
-        for i in range(settle_start, upper_plateau_bound + 1):
+        for i in range(settle_start, upper_plateau_bound + 1, candidate_stride_n):
+            history = direction_strength[motion_start:i]
+            if history.size < sustain_n:
+                continue
+
+            local_peak = float(np.max(history))
+            if local_peak < motion_threshold:
+                continue
+
             plateau_slice = direction_strength[i:i + plateau_n]
             if plateau_slice.size < plateau_n:
                 continue
-            plateau_threshold = cfg.plateau_threshold_ratio * reference_peak
-            if float(np.mean(plateau_slice)) > plateau_threshold:
-                continue
-            if float(np.max(plateau_slice)) > motion_threshold:
+
+            plateau_mean = float(np.mean(plateau_slice))
+            plateau_max = float(np.max(plateau_slice))
+            plateau_threshold = cfg.plateau_threshold_ratio * local_peak
+            if plateau_mean > max(plateau_threshold, 0.35 * local_peak):
                 continue
 
             net_motion = float(smooth_motion[i + plateau_n] - smooth_motion[i])
@@ -1203,15 +1309,101 @@ def detect_sp_multisensor(
                 if net_motion < -max_settle_motion:
                     continue
 
-            confidence = float(
-                np.clip(
-                    1.0 - (float(np.mean(plateau_slice)) / (reference_peak + 1e-8)),
-                    0.0,
-                    1.0,
-                )
+            slowdown_score = float(np.clip(1.0 - (plateau_mean / (local_peak + 1e-8)), 0.0, 1.0))
+            max_slowdown_score = float(np.clip(1.0 - (plateau_max / (local_peak + 1e-8)), 0.0, 1.0))
+            pressure_score = _support_score(pressure_support, i)
+            strain_score = _support_score(strain_support, i)
+            time_fraction = (i - search_start) / max(1, search_end - search_start)
+            early_bonus = 1.0 - float(np.clip(time_fraction, 0.0, 1.0))
+            score = (
+                0.45 * slowdown_score
+                + 0.15 * max_slowdown_score
+                + 0.20 * pressure_score
+                + 0.15 * strain_score
+                + 0.05 * early_bonus
             )
+
+            if score < cfg.min_travel_slowdown_score:
+                continue
+
             region_end = i + plateau_n - 1
-            return i, region_end, smooth_motion, direction_strength, positive_direction, reference_peak, confidence
+            candidates.append((score, i, region_end, local_peak))
+
+        if candidates:
+            stable_candidates = candidates
+            if require_post_sp_quiet:
+                max_late_motion = max(
+                    cfg.post_sp_min_motion,
+                    cfg.post_sp_max_motion_ratio * max(motion_range, 1e-8),
+                )
+
+                def _stays_quiet_after_sp(candidate: tuple[float, int, int, float]) -> bool:
+                    _score, _candidate_index, candidate_region_end, _local_peak = candidate
+                    verify_start = min(candidate_region_end + 1, search_end)
+                    verify_end = min(search_end, verify_start + post_sp_verify_n)
+                    if verify_end <= verify_start + plateau_n:
+                        return True
+
+                    future_window = smooth_motion[verify_start:verify_end]
+                    if future_window.size < plateau_n:
+                        return True
+
+                    future_motion = float(np.max(future_window) - np.min(future_window))
+                    if future_motion > max_late_motion:
+                        return False
+
+                    if motion_range <= cfg.post_sp_small_range_threshold:
+                        full_future_window = smooth_motion[verify_start:search_end]
+                        if full_future_window.size >= plateau_n:
+                            full_future_motion = float(
+                                np.max(full_future_window) - np.min(full_future_window)
+                            )
+                            max_full_future_motion = max(
+                                cfg.post_sp_min_motion,
+                                cfg.post_sp_tail_motion_ratio * max(motion_range, 1e-8),
+                            )
+                            if full_future_motion > max_full_future_motion:
+                                return False
+
+                        tail_start = max(verify_start, search_end - post_sp_tail_n)
+                        tail_window = smooth_motion[tail_start:search_end]
+                        if tail_window.size >= plateau_n:
+                            tail_motion = float(np.max(tail_window) - np.min(tail_window))
+                            max_tail_motion = max(
+                                cfg.post_sp_min_motion,
+                                cfg.post_sp_tail_motion_ratio * max(motion_range, 1e-8),
+                            )
+                            if tail_motion > max_tail_motion:
+                                return False
+
+                    return True
+
+                stable_candidates = [
+                    candidate
+                    for candidate in candidates
+                    if _stays_quiet_after_sp(candidate)
+                ]
+                if not stable_candidates:
+                    travel_candidate_rejected_after_motion = True
+                    return None
+
+            best_score = max(score for score, _index, _region_end, _local_peak in stable_candidates)
+            min_early_score = cfg.early_candidate_score_ratio * best_score
+            score, candidate_index, region_end, local_peak = next(
+                candidate
+                for candidate in stable_candidates
+                if candidate[0] >= min_early_score
+            )
+            confidence = float(np.clip(score, 0.0, 1.0))
+            return (
+                candidate_index,
+                region_end,
+                smooth_motion,
+                direction_strength,
+                positive_direction,
+                local_peak,
+                confidence,
+            )
 
         return None
 
@@ -1250,7 +1442,11 @@ def detect_sp_multisensor(
             return i
         return None
 
-    travel_region = _settle_region(travel_signal) if travel_signal is not None else None
+    travel_region = (
+        _settle_region(travel_signal, require_post_sp_quiet=True)
+        if travel_signal is not None
+        else None
+    )
     if travel_region is not None:
         region_start, region_end, _smooth, _strength, positive_direction, _reference_peak, confidence = travel_region
         if strain_signal is not None:
@@ -1275,6 +1471,15 @@ def detect_sp_multisensor(
             reason=f"travel {direction_label} motion settled into plateau region used for sp",
         )
 
+    if travel_candidate_rejected_after_motion:
+        return SPResult(
+            start_index=None,
+            end_index=None,
+            sp_index=None,
+            confidence=0.0,
+            reason="travel sp candidate rejected because travel moved again after sp",
+        )
+
     strain_region = _settle_region(strain_signal) if strain_signal is not None else None
     if strain_region is not None:
         region_start, region_end, _smooth, _strength, positive_direction, _reference_peak, confidence = strain_region
@@ -1287,7 +1492,17 @@ def detect_sp_multisensor(
             reason=f"strain {direction_label} plateau region used as sp fallback",
         )
 
-    return pressure_sp
+    if cfg.fallback_to_pressure_sp:
+        if bp_index is None or pressure_sp.sp_index is None or pressure_sp.sp_index >= bp_index:
+            return pressure_sp
+
+    return SPResult(
+        start_index=None,
+        end_index=None,
+        sp_index=None,
+        confidence=0.0,
+        reason="no valid multisensor sp found after bp",
+    )
         
 # ------------ Target builders --------- #
 
