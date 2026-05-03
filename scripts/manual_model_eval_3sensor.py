@@ -20,6 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 from src.data.data_loader import load_event
+from src.utils.metrics import event_position_mae
 from src.data.multisensor_dataset import MULTISENSOR_SAMPLERATES, SENSOR_NAMES
 from src.data.preprocess import EventProcessor, PreprocessingConfig
 from src.data.targets import (
@@ -252,6 +253,21 @@ def _heuristic_points(processed_by_sensor: dict, pressure_event) -> dict[str, di
         "SP": {"index": sp_result.sp_index, "reason": sp_result.reason},
     }
 
+def _position_mae_by_point(predictions: dict[str, dict], heuristic_points: dict[str, dict]) -> dict[str, float | None]:
+    errors: dict[str, float | None] = {}
+
+    for point_name in POINT_NAMES:
+        pred_index = predictions[point_name]["index"]
+        true_index = heuristic_points[point_name]["index"]
+
+        if true_index is None or pred_index is None:
+            errors[point_name] = None
+            continue
+
+        result = event_position_mae(true_indices=[true_index], pred_indices=[pred_index])
+        errors[point_name] = result.mae_position
+
+    return errors
 
 def _normalize_for_plot(signal: np.ndarray) -> np.ndarray:
     signal = signal.astype(np.float32)
@@ -386,6 +402,8 @@ def main() -> None:
     predictions, probs = _predict_points(model, x, pressure_event.samplerate, device)
     heuristic = _heuristic_points(processed_by_sensor, pressure_event)
 
+    position_mae = _position_mae_by_point(predictions=predictions, heuristic_points=heuristic)
+
     print("\nEvent")
     pressure_raw = raw_by_sensor["pressure"]
     print(" site:", pressure_raw.sitename)
@@ -403,16 +421,25 @@ def main() -> None:
             if heuristic_index is not None
             else None
         )
-        print(
-            f" {point_name}: pred={prediction['index']} "
-            f"t={prediction['time_sec']:.3f}s "
-            f"conf={prediction['confidence']:.4f} | "
-            f"heuristic={heuristic_index} "
-            f"t={heuristic_time:.3f}s" if heuristic_time is not None else
-            f" {point_name}: pred={prediction['index']} "
-            f"t={prediction['time_sec']:.3f}s "
-            f"conf={prediction['confidence']:.4f} | heuristic=None"
-        )
+        mae_position = position_mae[point_name]
+
+        if heuristic_time is not None:
+            print(
+                f" {point_name}: pred={prediction['index']} "
+                f"t={prediction['time_sec']:.3f}s "
+                f"conf={prediction['confidence']:.4f} | "
+                f"heuristic={heuristic_index} "
+                f"t={heuristic_time:.3f}s | "
+                f"mae_pos={mae_position:.1f}"
+            )
+        else:
+            print(
+                f" {point_name}: pred={prediction['index']} "
+                f"t={prediction['time_sec']:.3f}s "
+                f"conf={prediction['confidence']:.4f} | "
+                f"heuristic=None | "
+                f"mae_pos=None"
+            )
 
     _plot(
         raw_by_sensor=raw_by_sensor,

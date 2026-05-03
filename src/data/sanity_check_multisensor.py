@@ -23,14 +23,15 @@ from .targets import (
     moving_avg,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_PRESSURE_ROOTS = [
+    Path("src/data/raw"),
     Path("data/raw"),
-    Path("src/data/raw/raw1"),
-    Path("src/data/raw/raw2"),
     Path("/mnt/d/Bachelor_data/data/raw_1sensor"),
 ]
 DEFAULT_TWO_SENSOR_ROOTS = [
+    Path("src/data/raw_strain_travel"),
     Path("data/raw"),
     Path("/mnt/d/Bachelor_data/data/raw_2SENSOR"),
 ]
