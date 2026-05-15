@@ -1,8 +1,6 @@
 numpy
 pandas
-scikit-learn
 torch
-tensorflow
 matplotlib
 
 requests
