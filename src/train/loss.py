@@ -30,6 +30,8 @@ class MaskedBCELoss(nn.Module):
         preds: torch.Tensor,
         targets: torch.Tensor,
         mask: torch.Tensor,
+        target_valid_mask: torch.Tensor | None = None,
+        sample_weights: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if preds.shape != targets.shape:
             raise ValueError(
@@ -44,14 +46,43 @@ class MaskedBCELoss(nn.Module):
                 f"Mask shape {mask.shape} is incompatible with preds {preds.shape}"
             )
 
+        if target_valid_mask is not None:
+            if target_valid_mask.ndim != 2:
+                raise ValueError(
+                    f"target_valid_mask must be (B, C), got {target_valid_mask.shape}"
+                )
+            if target_valid_mask.shape != preds.shape[:2]:
+                raise ValueError(
+                    "target_valid_mask must match preds batch and channel dimensions, "
+                    f"got {target_valid_mask.shape} vs {preds.shape[:2]}"
+                )
+            target_valid_mask = target_valid_mask.to(
+                device=preds.device,
+                dtype=preds.dtype,
+            )
+
+        if sample_weights is not None:
+            if sample_weights.ndim != 1 or sample_weights.shape[0] != preds.shape[0]:
+                raise ValueError(
+                    f"sample_weights must be shape (B,), got {sample_weights.shape}"
+                )
+            sample_weights = sample_weights.to(device=preds.device, dtype=preds.dtype)
+
         loss = self.criterion(preds, targets)
         expanded_mask = mask.to(dtype=loss.dtype).expand_as(loss)
+        if target_valid_mask is not None:
+            expanded_mask = expanded_mask * target_valid_mask.unsqueeze(-1)
 
         loss = loss * expanded_mask
 
         # channel weighting
         if self.channel_weights is not None:
             loss = loss * self.channel_weights
+
+        if sample_weights is not None:
+            sample_weights = sample_weights.view(-1, 1, 1)
+            loss = loss * sample_weights
+            expanded_mask = expanded_mask * sample_weights
 
         return loss, expanded_mask
 
@@ -60,8 +91,16 @@ class MaskedBCELoss(nn.Module):
         preds: torch.Tensor,
         targets: torch.Tensor,
         mask: torch.Tensor,
+        target_valid_mask: torch.Tensor | None = None,
+        sample_weights: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        loss, expanded_mask = self._masked_loss(preds, targets, mask)
+        loss, expanded_mask = self._masked_loss(
+            preds,
+            targets,
+            mask,
+            target_valid_mask=target_valid_mask,
+            sample_weights=sample_weights,
+        )
 
         loss_sum = loss.sum()
         valid_items = expanded_mask.sum().clamp(min=1.0)
@@ -73,8 +112,16 @@ class MaskedBCELoss(nn.Module):
         preds: torch.Tensor,
         targets: torch.Tensor,
         mask: torch.Tensor,
+        target_valid_mask: torch.Tensor | None = None,
+        sample_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        loss, expanded_mask = self._masked_loss(preds, targets, mask)
+        loss, expanded_mask = self._masked_loss(
+            preds,
+            targets,
+            mask,
+            target_valid_mask=target_valid_mask,
+            sample_weights=sample_weights,
+        )
 
         if self.reduction == "mean":
             denom = expanded_mask.sum().clamp(min=1.0)

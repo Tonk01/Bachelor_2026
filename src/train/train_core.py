@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from src.data.collate import valve_collate
 from src.models.CNN_model import ValveEventCNN
-from src.models.TCN_model import ValveEventTCN
+from src.models.TCN_model import ValveEventTCN, ValveEventTCNMedium, ValveEventTCNSmall
 from src.data.sampler import BucketBatchSampler
 from src.train.loss import MaskedBCELoss
 
@@ -27,6 +27,9 @@ class TrainConfig:
     in_channels: int = 1
     dropout: float = 0.1
     model_type: str = "cnn"
+    sensor_mask_channels: int = 0
+    early_stopping_patience: int = 0
+    early_stopping_min_delta: float = 0.0
 
 
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
@@ -34,6 +37,9 @@ def move_batch_to_device(batch: dict, device: torch.device) -> dict:
         "x": batch["x"].to(device, non_blocking=True),
         "y": batch["y"].to(device, non_blocking=True),
         "mask": batch["mask"].to(device, non_blocking=True),
+        "sensor_presence": batch["sensor_presence"].to(device, non_blocking=True),
+        "target_valid_mask": batch["target_valid_mask"].to(device, non_blocking=True),
+        "sample_weights": batch["sample_weights"].to(device, non_blocking=True),
         "lengths": batch["lengths"].to(device, non_blocking=True),
         "meta": batch["meta"],
     }
@@ -107,6 +113,9 @@ def train_one_epoch(
         x = batch["x"]
         y = batch["y"]
         mask = batch["mask"]
+        sensor_presence = batch["sensor_presence"]
+        target_valid_mask = batch["target_valid_mask"]
+        sample_weights = batch["sample_weights"]
 
         if step == 1:
             print("First batch x device", x.device)
@@ -114,8 +123,14 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        preds = model(x)
-        loss_sum, valid_items = criterion.sum_and_count(preds, y, mask)
+        preds = model(x, sensor_presence=sensor_presence)
+        loss_sum, valid_items = criterion.sum_and_count(
+            preds,
+            y,
+            mask,
+            target_valid_mask=target_valid_mask,
+            sample_weights=sample_weights,
+        )
         loss = loss_sum / valid_items
 
         loss.backward()
@@ -157,10 +172,19 @@ def validate_one_epoch(
         x = batch["x"]
         y = batch["y"]
         mask = batch["mask"]
+        sensor_presence = batch["sensor_presence"]
+        target_valid_mask = batch["target_valid_mask"]
+        sample_weights = batch["sample_weights"]
 
-        preds = model(x)
+        preds = model(x, sensor_presence=sensor_presence)
 
-        loss_sum, valid_items = criterion.sum_and_count(preds, y, mask)
+        loss_sum, valid_items = criterion.sum_and_count(
+            preds,
+            y,
+            mask,
+            target_valid_mask=target_valid_mask,
+            sample_weights=sample_weights,
+        )
         loss = loss_sum / valid_items
 
         total_loss += float(loss_sum.item())
@@ -206,8 +230,14 @@ def fit(
     if not 0.0 <= cfg.dropout < 1.0:
         raise ValueError("dropout must be in [0.0, 1.0)")
 
-    if cfg.model_type not in ("cnn", "tcn"):
-        raise ValueError("model_type must be 'cnn' or 'tcn'")
+    if cfg.model_type not in ("cnn", "tcn", "tcn_medium", "tcn_small"):
+        raise ValueError("model_type must be 'cnn', 'tcn', 'tcn_medium', or 'tcn_small'")
+
+    if cfg.early_stopping_patience < 0:
+        raise ValueError("early_stopping_patience must be >= 0")
+
+    if cfg.early_stopping_min_delta < 0:
+        raise ValueError("early_stopping_min_delta must be >= 0")
 
     train_loader = build_dataloader(
         dataset=train_dataset,
@@ -227,8 +257,19 @@ def fit(
         persistent_workers=cfg.persistent_workers,
     )
 
-    model_cls = ValveEventTCN if cfg.model_type == "tcn" else ValveEventCNN
-    model = model_cls(in_channels=cfg.in_channels, dropout=cfg.dropout).to(device)
+    if cfg.model_type == "tcn":
+        model_cls = ValveEventTCN
+    elif cfg.model_type == "tcn_medium":
+        model_cls = ValveEventTCNMedium
+    elif cfg.model_type == "tcn_small":
+        model_cls = ValveEventTCNSmall
+    else:
+        model_cls = ValveEventCNN
+    model = model_cls(
+        in_channels=cfg.in_channels,
+        dropout=cfg.dropout,
+        sensor_mask_channels=cfg.sensor_mask_channels,
+    ).to(device)
 
     criterion = MaskedBCELoss()
 
@@ -243,6 +284,14 @@ def fit(
 
     if device.type == "cuda":
         print("GPU", torch.cuda.get_device_name(0))
+    print(
+        "DataLoader workers",
+        cfg.workers,
+        "| prefetch_factor",
+        cfg.prefetch_factor if cfg.workers > 0 else None,
+        "| persistent_workers",
+        cfg.persistent_workers if cfg.workers > 0 else False,
+    )
 
     history = {
         "train_loss": [],
@@ -250,12 +299,16 @@ def fit(
         "train_seconds": [],
         "val_seconds": [],
         "epoch_seconds": [],
+        "best_epoch": [],
+        "stopped_early": [False],
+        "stopped_epoch": [None],
     }
 
     best_val_loss = float("inf")
-    best_epoch = 0
 
     best_state_dict: dict[str, torch.Tensor] | None = None
+    best_epoch: int | None = None
+    epochs_without_improvement = 0
     fit_start = time.perf_counter()
 
     for epoch in range(1, cfg.epochs + 1):
@@ -288,6 +341,20 @@ def fit(
         history["val_seconds"].append(val_seconds)
         history["epoch_seconds"].append(epoch_seconds)
 
+        improved = val_loss < (best_val_loss - cfg.early_stopping_min_delta)
+        if improved:
+            best_val_loss = val_loss
+            best_state_dict = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
+            best_epoch = epoch
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+
+        history["best_epoch"].append(best_epoch)
+
         print(
             f"epoch={epoch}/{cfg.epochs} "
             f"train_loss={train_loss:.6f} - val_loss={val_loss:.6f} "
@@ -295,21 +362,22 @@ def fit(
             f"epoch_time={epoch_seconds:.1f}s"
         )
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_epoch = epoch
-
-            best_state_dict = {
-                key: value.detach().cpu().clone()
-                for key, value in model.state_dict().items()
-            }
+        if (
+            cfg.early_stopping_patience > 0
+            and epochs_without_improvement >= cfg.early_stopping_patience
+        ):
+            print(
+                f"Early stopping triggered at epoch {epoch} "
+                f"(best epoch {best_epoch}, best val_loss={best_val_loss:.6f})"
+            )
+            history["stopped_early"] = [True]
+            history["stopped_epoch"] = [epoch]
+            break
 
     if best_state_dict is None:
         raise ValueError("No best model state was captured during training")
 
     history["total_seconds"] = [time.perf_counter() - fit_start]
-    history["best_val_loss"] = [best_val_loss]
-    history["best_epoch"] = [float(best_epoch)]
 
     model.load_state_dict(best_state_dict)
 

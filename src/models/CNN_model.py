@@ -3,6 +3,27 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+
+def _append_sensor_mask(
+    x: torch.Tensor,
+    sensor_presence: torch.Tensor | None,
+    sensor_mask_channels: int,
+) -> torch.Tensor:
+    if sensor_mask_channels <= 0 or sensor_presence is None:
+        return x
+
+    if sensor_presence.ndim != 2 or sensor_presence.shape[0] != x.shape[0]:
+        raise ValueError(
+            "sensor_presence must have shape (B, C) matching the batch dimension"
+        )
+
+    mask = sensor_presence.to(device=x.device, dtype=x.dtype)
+    if mask.shape[1] < sensor_mask_channels:
+        repeats = (sensor_mask_channels + mask.shape[1] - 1) // mask.shape[1]
+        mask = mask.repeat(1, repeats)
+    mask = mask[:, :sensor_mask_channels].unsqueeze(-1).expand(-1, -1, x.shape[-1])
+    return torch.cat((x, mask), dim=1)
+
 class ConvBlock(nn.Module):
     def __init__(
         self,
@@ -35,11 +56,18 @@ class ValveEventCNN(nn.Module):
             out_channels: int = 3,
             hidden_channels: int = 32,
             dropout: float = 0.1,
+            sensor_mask_channels: int = 0,
             ) -> None:
         super().__init__()
+        self.sensor_mask_channels = sensor_mask_channels
 
         self.features = nn.Sequential(
-            ConvBlock(in_channels, hidden_channels, kernel_size=15, dropout=dropout),
+            ConvBlock(
+                in_channels + sensor_mask_channels,
+                hidden_channels,
+                kernel_size=15,
+                dropout=dropout,
+            ),
             ConvBlock(hidden_channels, hidden_channels, kernel_size=11, dropout=dropout),
             ConvBlock(hidden_channels, hidden_channels * 2, kernel_size=9, dropout=dropout),
             ConvBlock(hidden_channels * 2, hidden_channels * 2, kernel_size=7, dropout=dropout),
@@ -52,10 +80,15 @@ class ValveEventCNN(nn.Module):
             nn.Conv1d(hidden_channels, out_channels, kernel_size=1),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        sensor_presence: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if x.ndim != 3:
             raise ValueError(f"Excpeted inputs hape (B, C, T), got {tuple(x.shape)}")
-        
+
+        x = _append_sensor_mask(x, sensor_presence, self.sensor_mask_channels)
         y = self.features(x)
         y = self.head(y)
         return y

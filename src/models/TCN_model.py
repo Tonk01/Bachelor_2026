@@ -4,6 +4,27 @@ import torch
 import torch.nn as nn
 
 
+def _append_sensor_mask(
+    x: torch.Tensor,
+    sensor_presence: torch.Tensor | None,
+    sensor_mask_channels: int,
+) -> torch.Tensor:
+    if sensor_mask_channels <= 0 or sensor_presence is None:
+        return x
+
+    if sensor_presence.ndim != 2 or sensor_presence.shape[0] != x.shape[0]:
+        raise ValueError(
+            "sensor_presence must have shape (B, C) matching the batch dimension"
+        )
+
+    mask = sensor_presence.to(device=x.device, dtype=x.dtype)
+    if mask.shape[1] < sensor_mask_channels:
+        repeats = (sensor_mask_channels + mask.shape[1] - 1) // mask.shape[1]
+        mask = mask.repeat(1, repeats)
+    mask = mask[:, :sensor_mask_channels].unsqueeze(-1).expand(-1, -1, x.shape[-1])
+    return torch.cat((x, mask), dim=1)
+
+
 class DilatedConvBlock(nn.Module):
     def __init__(
         self,
@@ -43,19 +64,31 @@ class ValveCnnEncoder(nn.Module):
         num_sensors: int = 3,
         num_classes: int = 3,
         dropout: float = 0.1,
+        sensor_mask_channels: int = 0,
     ) -> None:
         super().__init__()
+        self.sensor_mask_channels = sensor_mask_channels
 
-        self.layer1 = DilatedConvBlock(num_sensors, 64, dilation=1, dropout=dropout)
+        self.layer1 = DilatedConvBlock(
+            num_sensors + sensor_mask_channels,
+            64,
+            dilation=1,
+            dropout=dropout,
+        )
         self.layer2 = DilatedConvBlock(64, 128, dilation=2, dropout=dropout)
         self.layer3 = DilatedConvBlock(128, 128, dilation=4, dropout=dropout)
         self.layer4 = DilatedConvBlock(128, 64, dilation=8, dropout=dropout)
         self.classifier = nn.Conv1d(64, num_classes, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        sensor_presence: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if x.ndim != 3:
             raise ValueError(f"Expected input shape (B, C, T), got {tuple(x.shape)}")
 
+        x = _append_sensor_mask(x, sensor_presence, self.sensor_mask_channels)
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -75,11 +108,13 @@ class ValveEventTCN(nn.Module):
         out_channels: int = 3,
         num_layers: int = 10,
         dropout: float = 0.1,
+        sensor_mask_channels: int = 0,
     ) -> None:
         super().__init__()
+        self.sensor_mask_channels = sensor_mask_channels
 
         layers = []
-        curr_channels = in_channels
+        curr_channels = in_channels + sensor_mask_channels
 
         for i in range(num_layers):
             dilation = 2**i
@@ -91,13 +126,35 @@ class ValveEventTCN(nn.Module):
         self.tcn_backbone = nn.Sequential(*layers)
         self.classifier = nn.Conv1d(curr_channels, out_channels, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        sensor_presence: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         # Input format: (Batch, Sensors, Time)
         if x.ndim != 3:
             raise ValueError(f"Expected input shape (B, C, T), got {tuple(x.shape)}")
+        x = _append_sensor_mask(x, sensor_presence, self.sensor_mask_channels)
         features = self.tcn_backbone(x)
         logits = self.classifier(features)
         return logits
+
+
+class ValveEventTCNMedium(ValveEventTCN):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        out_channels: int = 3,
+        dropout: float = 0.1,
+        sensor_mask_channels: int = 0,
+    ) -> None:
+        super().__init__(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_layers=6,
+            dropout=dropout,
+            sensor_mask_channels=sensor_mask_channels,
+        )
 
 
 class ValveEventTCNSmall(ValveCnnEncoder):
@@ -110,11 +167,13 @@ class ValveEventTCNSmall(ValveCnnEncoder):
         in_channels: int = 3,
         out_channels: int = 3,
         dropout: float = 0.1,
+        sensor_mask_channels: int = 0,
     ) -> None:
         super().__init__(
             num_sensors=in_channels,
             num_classes=out_channels,
             dropout=dropout,
+            sensor_mask_channels=sensor_mask_channels,
         )
 
 
