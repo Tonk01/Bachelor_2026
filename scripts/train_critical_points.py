@@ -408,10 +408,27 @@ def main() -> None:
 
     torch.save(model.state_dict(), run_dir / "best_model.pt")
 
-    best_val_loss = min(history["val_loss"]) if history ["val_loss"] else None
+    best_val_loss = (
+        history.get("best_val_loss", [None])[-1]
+        if history.get("best_val_loss")
+        else None
+    )
+
+    best_epoch = (
+        int(history.get("best_epoch", [0])[-1])
+        if history.get("best_epoch")
+        else None
+    )
+
     final_train_loss = history["train_loss"][-1] if history["train_loss"] else None
     final_val_loss = history["val_loss"][-1] if history["val_loss"] else None
-    total_training_seconds = history.get("total_seconds", [None])[-1]
+
+    total_training_seconds = (
+        history.get("total_seconds", [None])[-1]
+        if history.get("total_seconds")
+        else None
+    )
+
     average_epoch_seconds = (
         float(np.mean(history["epoch_seconds"]))
         if history.get("epoch_seconds")
@@ -439,6 +456,7 @@ def main() -> None:
         "best_val_loss": float(best_val_loss) if best_val_loss is not None else None,
         "final_train_loss": float(final_train_loss) if final_train_loss is not None else None,
         "final_val_loss": float(final_val_loss) if final_val_loss is not None else None,
+        "best_epoch": int(best_epoch) if best_epoch is not None else None,
         "total_training_seconds": (
             float(total_training_seconds)
             if total_training_seconds is not None
@@ -449,7 +467,7 @@ def main() -> None:
         "history_file": "history.json",
         "train_indices_file": "train_idx.npy",
         "val_indices_file": "val_idx.npy",
-        "test_indices_file": "test_idx.npy"
+        "test_indices_file": "test_idx.npy",
     }
 
     with (run_dir / "summary.json").open("w", encoding="utf-8") as fp:

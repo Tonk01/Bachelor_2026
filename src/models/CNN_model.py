@@ -39,9 +39,9 @@ class ValveEventCNN(nn.Module):
         super().__init__()
 
         self.features = nn.Sequential(
-            ConvBlock(in_channels, hidden_channels, kernel_size=9, dropout=dropout),
-            ConvBlock(hidden_channels, hidden_channels, kernel_size=9, dropout=dropout),
-            ConvBlock(hidden_channels, hidden_channels * 2, kernel_size=7, dropout=dropout),
+            ConvBlock(in_channels, hidden_channels, kernel_size=15, dropout=dropout),
+            ConvBlock(hidden_channels, hidden_channels, kernel_size=11, dropout=dropout),
+            ConvBlock(hidden_channels, hidden_channels * 2, kernel_size=9, dropout=dropout),
             ConvBlock(hidden_channels * 2, hidden_channels * 2, kernel_size=7, dropout=dropout),
             ConvBlock(hidden_channels * 2, hidden_channels * 2, kernel_size=5, dropout=dropout)
         )

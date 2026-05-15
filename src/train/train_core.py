@@ -13,12 +13,13 @@ from src.models.TCN_model import ValveEventTCN
 from src.data.sampler import BucketBatchSampler
 from src.train.loss import MaskedBCELoss
 
+
 @dataclass
 class TrainConfig:
     batch_size: int = 8
     epochs: int = 20
     learning_rate: float = 1e-3
-    weight_decay: float = 1e-4  
+    weight_decay: float = 1e-4
     workers: int = 0
     prefetch_factor: int | None = 2
     persistent_workers: bool = True
@@ -26,7 +27,8 @@ class TrainConfig:
     in_channels: int = 1
     dropout: float = 0.1
     model_type: str = "cnn"
-    
+
+
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
     return {
         "x": batch["x"].to(device, non_blocking=True),
@@ -35,6 +37,7 @@ def move_batch_to_device(batch: dict, device: torch.device) -> dict:
         "lengths": batch["lengths"].to(device, non_blocking=True),
         "meta": batch["meta"],
     }
+
 
 def build_dataloader(
     dataset: Dataset,
@@ -49,11 +52,12 @@ def build_dataloader(
         "pin_memory": torch.cuda.is_available(),
         "num_workers": workers,
     }
+
     if workers > 0:
         loader_kwargs["persistent_workers"] = persistent_workers
         if prefetch_factor is not None:
             loader_kwargs["prefetch_factor"] = prefetch_factor
-    
+
     if hasattr(dataset, "estimated_lengths"):
         batch_sampler = BucketBatchSampler(
             lengths=dataset.estimated_lengths,
@@ -70,13 +74,14 @@ def build_dataloader(
             batch_sampler=batch_sampler,
             **loader_kwargs,
         )
-    
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         **loader_kwargs,
     )
+
 
 def train_one_epoch(
     model: ValveEventCNN,
@@ -87,9 +92,8 @@ def train_one_epoch(
 ) -> float:
     model.train()
 
-    running_loss = 0.0
-    num_batches = 0
-
+    total_loss = 0.0
+    total_items = 0.0
 
     progress_bar = tqdm(loader, desc="Training", leave=False)
     print()
@@ -109,24 +113,26 @@ def train_one_epoch(
             print("Model device", next(model.parameters()).device)
 
         optimizer.zero_grad(set_to_none=True)
-        
+
         preds = model(x)
-        loss = criterion(preds, y, mask)
+        loss_sum, valid_items = criterion.sum_and_count(preds, y, mask)
+        loss = loss_sum / valid_items
 
         loss.backward()
         optimizer.step()
-
-        running_loss += float(loss.item())
-        num_batches += 1
+        total_loss += float(loss_sum.item())
+        total_items += float(valid_items.item())
 
         progress_bar.set_postfix({
-            "loss:": f"{loss.item():.6f}"
+            "loss": f"{loss.item():.6f}",
+            "items": int(valid_items.item()),
         })
 
-    if num_batches == 0:
-        raise ValueError("Training loader produced zero batches")
-    
-    return running_loss / num_batches
+    if total_items == 0:
+        raise ValueError("Training loader produced zero valid items")
+
+    return total_loss / total_items
+
 
 @torch.no_grad()
 def validate_one_epoch(
@@ -137,10 +143,11 @@ def validate_one_epoch(
 ) -> float:
     model.eval()
 
-    running_loss = 0.0
-    num_batches = 0
+    total_loss = 0.0
+    total_items = 0.0
 
     progress_bar = tqdm(loader, desc="Validation", leave=False)
+
     for batch in progress_bar:
         if batch is None:
             continue
@@ -152,19 +159,22 @@ def validate_one_epoch(
         mask = batch["mask"]
 
         preds = model(x)
-        loss = criterion(preds, y, mask)
 
-        running_loss += float(loss.item())
-        num_batches += 1
+        loss_sum, valid_items = criterion.sum_and_count(preds, y, mask)
+        loss = loss_sum / valid_items
+
+        total_loss += float(loss_sum.item())
+        total_items += float(valid_items.item())
 
         progress_bar.set_postfix({
-            "val_loss": f"{loss.item():.6f}"
+            "val_loss": f"{loss.item():.6f}",
+            "items": int(valid_items.item()),
         })
 
-    if num_batches == 0:
-        raise ValueError("Validation loader produced 0 batches")
-    
-    return running_loss / num_batches
+    if total_items == 0:
+        raise ValueError("Validation loader produced zero valid items")
+
+    return total_loss / total_items
 
 
 def fit(
@@ -180,13 +190,13 @@ def fit(
 
     if cfg.epochs <= 0:
         raise ValueError("epochs must be greater than 0")
-    
+
     if cfg.learning_rate <= 0:
         raise ValueError("learning rate must be greater than 0")
-    
+
     if cfg.weight_decay < 0:
         raise ValueError("weight decay must be >= 0")
-    
+
     if cfg.workers < 0:
         raise ValueError("workers must be >= 0")
 
@@ -219,7 +229,9 @@ def fit(
 
     model_cls = ValveEventTCN if cfg.model_type == "tcn" else ValveEventCNN
     model = model_cls(in_channels=cfg.in_channels, dropout=cfg.dropout).to(device)
+
     criterion = MaskedBCELoss()
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.learning_rate,
@@ -228,16 +240,9 @@ def fit(
 
     print("Using device", device)
     print("Model type", cfg.model_type)
+
     if device.type == "cuda":
         print("GPU", torch.cuda.get_device_name(0))
-    print(
-        "DataLoader workers",
-        cfg.workers,
-        "| prefetch_factor",
-        cfg.prefetch_factor if cfg.workers > 0 else None,
-        "| persistent_workers",
-        cfg.persistent_workers if cfg.workers > 0 else False,
-    )
 
     history = {
         "train_loss": [],
@@ -248,11 +253,14 @@ def fit(
     }
 
     best_val_loss = float("inf")
+    best_epoch = 0
+
     best_state_dict: dict[str, torch.Tensor] | None = None
     fit_start = time.perf_counter()
 
     for epoch in range(1, cfg.epochs + 1):
         epoch_start = time.perf_counter()
+
         train_start = time.perf_counter()
         train_loss = train_one_epoch(
             model=model,
@@ -271,6 +279,7 @@ def fit(
             device=device,
         )
         val_seconds = time.perf_counter() - val_start
+
         epoch_seconds = time.perf_counter() - epoch_start
 
         history["train_loss"].append(train_loss)
@@ -288,6 +297,8 @@ def fit(
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_epoch = epoch
+
             best_state_dict = {
                 key: value.detach().cpu().clone()
                 for key, value in model.state_dict().items()
@@ -297,5 +308,9 @@ def fit(
         raise ValueError("No best model state was captured during training")
 
     history["total_seconds"] = [time.perf_counter() - fit_start]
+    history["best_val_loss"] = [best_val_loss]
+    history["best_epoch"] = [float(best_epoch)]
+
     model.load_state_dict(best_state_dict)
+
     return model, history
