@@ -137,20 +137,32 @@ def build_cache_from_dataset(
 
         x = sample["x"].detach().cpu().to(torch.float32).contiguous()
         y = sample["y"].detach().cpu().to(torch.float32).contiguous()
+        sensor_presence = sample.get("sensor_presence")
+        if sensor_presence is not None:
+            sensor_presence = torch.as_tensor(sensor_presence).detach().cpu().to(torch.float32).contiguous()
+        target_valid_mask = sample.get("target_valid_mask")
+        if target_valid_mask is not None:
+            target_valid_mask = torch.as_tensor(target_valid_mask).detach().cpu().to(torch.float32).contiguous()
+        sample_weight = sample.get("sample_weight")
         sample_meta = dict(sample.get("meta", {}))
         sample_meta["cache_index"] = cache_index
         sample_meta["source_index"] = source_index
         sample_filename = f"{cache_index:06d}.pt"
 
-        torch.save(
-            {
-                "x": x,
-                "y": y,
-                "length": length,
-                "meta": sample_meta,
-            },
-            sample_dir / sample_filename,
-        )
+        payload = {
+            "x": x,
+            "y": y,
+            "length": length,
+            "meta": sample_meta,
+        }
+        if sensor_presence is not None:
+            payload["sensor_presence"] = sensor_presence
+        if target_valid_mask is not None:
+            payload["target_valid_mask"] = target_valid_mask
+        if sample_weight is not None:
+            payload["sample_weight"] = float(sample_weight)
+
+        torch.save(payload, sample_dir / sample_filename)
 
         lengths.append(length)
         source_indices.append(source_index)

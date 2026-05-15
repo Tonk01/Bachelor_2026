@@ -15,6 +15,20 @@ import time
 from .data_loader import load_event, find_event_files, peak_event_metadata
 from .preprocess import EventProcessor, PreprocessingConfig
 
+
+def _normalize_target_payload(
+    target_payload: torch.Tensor | dict[str, Any],
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    if isinstance(target_payload, dict):
+        y = target_payload["y"].to(torch.float32)
+        target_valid_mask = target_payload.get("target_valid_mask")
+        if target_valid_mask is not None:
+            target_valid_mask = torch.as_tensor(target_valid_mask)
+        return y, target_valid_mask
+
+    return target_payload.to(torch.float32), None
+
+
 class ValveDataset(Dataset):
     def __init__(self, *event_roots: str | Path, preprocessor: EventProcessor | None = None, target_builder: Callable[[any, torch.tensor]]) -> None:
         self.preprocessor = preprocessor or EventProcessor(PreprocessingConfig())
@@ -70,7 +84,8 @@ class ValveDataset(Dataset):
             length = int(processed.n_samples)
 
             x = torch.from_numpy(processed.normalized_signal).to(torch.float32).unsqueeze(0)
-            y = self.target_builder(processed).to(torch.float32)
+            target_payload = self.target_builder(processed)
+            y, target_valid_mask = _normalize_target_payload(target_payload)
             t3 = time.perf_counter()
 
             target_time = t3 - t2
@@ -99,6 +114,8 @@ class ValveDataset(Dataset):
         return {
             "x": x,
             "y": y,
+            "sensor_presence": torch.ones(1, dtype=torch.float32),
+            "target_valid_mask": target_valid_mask,
             "length": length,
             "meta": {
                 "eventid": processed.eventid,

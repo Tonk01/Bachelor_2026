@@ -17,6 +17,19 @@ SENSOR_NAMES = ("pressure", "strain", "travel")
 MULTISENSOR_SAMPLERATES = (10, 50, 200, 250, 400, 800, 1000, 2000)
 
 
+def _normalize_target_payload(
+    target_payload: torch.Tensor | dict[str, Any],
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    if isinstance(target_payload, dict):
+        y = target_payload["y"].to(torch.float32)
+        target_valid_mask = target_payload.get("target_valid_mask")
+        if target_valid_mask is not None:
+            target_valid_mask = torch.as_tensor(target_valid_mask)
+        return y, target_valid_mask
+
+    return target_payload.to(torch.float32), None
+
+
 class MultiSensorValveDataset(Dataset):
     def __init__(
         self,
@@ -126,7 +139,8 @@ class MultiSensorValveDataset(Dataset):
 
             x_np = np.stack(channel_arrays, axis=0).astype(np.float32)
             x = torch.from_numpy(x_np).to(torch.float32)
-            y = self.target_builder(pressure_for_targets, processed_by_sensor).to(torch.float32)
+            target_payload = self.target_builder(pressure_for_targets, processed_by_sensor)
+            y, target_valid_mask = _normalize_target_payload(target_payload)
 
         except Exception as exc:
             self.skipped_reasons[type(exc).__name__] += 1
@@ -137,6 +151,8 @@ class MultiSensorValveDataset(Dataset):
         return {
             "x": x,
             "y": y,
+            "sensor_presence": torch.ones(len(SENSOR_NAMES), dtype=torch.float32),
+            "target_valid_mask": target_valid_mask,
             "length": min_length,
             "meta": {
                 "eventid": pressure_for_targets.eventid,

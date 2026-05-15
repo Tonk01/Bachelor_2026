@@ -46,12 +46,19 @@ class CachedValveDataset(Dataset):
         sample_path = self._sample_path(cache_index)
         payload = torch.load(sample_path, map_location="cpu")
 
-        return {
+        sample = {
             "x": payload["x"].to(torch.float32),
             "y": payload["y"].to(torch.float32),
             "length": int(payload["length"]),
             "meta": dict(payload.get("meta", {})),
         }
+        if "sensor_presence" in payload:
+            sample["sensor_presence"] = payload["sensor_presence"].to(torch.float32)
+        if "target_valid_mask" in payload:
+            sample["target_valid_mask"] = payload["target_valid_mask"].to(torch.float32)
+        if "sample_weight" in payload:
+            sample["sample_weight"] = float(payload["sample_weight"])
+        return sample
 
     def _sample_path(self, cache_index: int) -> Path:
         numeric_path = cache_sample_path(self.cache_dir, cache_index)
