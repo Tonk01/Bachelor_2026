@@ -79,22 +79,6 @@ class BPConfig:
     motion_reference_window_ms: float = 500.0
 
 
-@dataclass(frozen=True)
-class MultiSensorBPConfig:
-    search_start_offset_ms: float = 60.0
-    search_end_ratio: float = 0.75
-    travel_smooth_ms: float = 25.0
-    sustain_window_ms: float = 80.0
-    net_drop_window_ms: float = 200.0
-    slow_ramp_window_ms: float = 1000.0
-    onset_threshold_ratio: float = 0.20
-    sustain_threshold_ratio: float = 0.15
-    min_net_drop_ratio: float = 0.03
-    slow_ramp_min_net_motion_ratio: float = 0.03
-    max_pressure_bp_shift_ms: float = 800.0
-    consensus_window_ms: float = 600.0
-    fallback_to_pressure_bp: bool = True
-
 @dataclass(frozen = True)
 class BPResult:
     start_index: int | None
@@ -111,31 +95,6 @@ class SPConfig:
     min_sp_delay_ms: float = 100.0
 
 
-@dataclass(frozen=True)
-class MultiSensorSPConfig:
-    search_start_offset_ms: float = 80.0
-    search_end_ratio: float = 0.95
-    travel_smooth_ms: float = 25.0
-    motion_window_ms: float = 200.0
-    sustain_window_ms: float = 80.0
-    plateau_window_ms: float = 150.0
-    candidate_stride_ms: float = 25.0
-    motion_threshold_ratio: float = 0.25
-    plateau_threshold_ratio: float = 0.12
-    max_settle_motion_ratio: float = 0.02
-    max_pressure_sp_shift_ms: float = 1200.0
-    consensus_window_ms: float = 700.0
-    min_travel_slowdown_score: float = 0.55
-    early_candidate_score_ratio: float = 0.92
-    post_sp_verify_window_ms: float = 10000.0
-    post_sp_max_motion_ratio: float = 0.20
-    post_sp_min_motion: float = 0.03
-    post_sp_small_range_threshold: float = 0.35
-    post_sp_tail_window_ms: float = 20000.0
-    post_sp_tail_motion_ratio: float = 0.20
-    fallback_to_pressure_sp: bool = True
-
-
 @dataclass(frozen = True)
 class SPResult:
     start_index: int | None
@@ -143,6 +102,7 @@ class SPResult:
     sp_index: int | None
     confidence: float
     reason: str
+
 
 @dataclass(frozen = True)
 class SharedSignalFeatures:
@@ -157,9 +117,64 @@ class SharedSignalFeatures:
     
     smooth_15: np.ndarray   
 
+
+@dataclass(frozen=True)
+class MultivariatConfig:
+    prp_baseline_ms: float = 500.0
+    prp_smooth_ms: float = 35.0
+    prp_sustain_ms: float = 120.0
+    prp_future_confirm_ms: float = 180.0
+    prp_threshold_std_mult: float = 4.5
+    prp_threshold_range_ratio: float = 0.015
+    prp_min_abs_change: float = 1e-8
+
+    bp_smooth_ms: float = 75.0
+    bp_sustain_ms: float = 150.0
+    bp_future_confirm_ms: float = 700.0
+    bp_slope_threshold_ratio: float = 0.18
+    bp_min_progress_ratio: float = 0.04
+    bp_pre_prp_tolerance_ms: float = 300.0
+    bp_search_start_ms: float = 50.0
+    bp_consensus_tolerance_ms: float = 200.0
+    candidate_score_ratio: float = 0.90
+    pressure_peak_threshold_ratio: float = 0.18
+    pressure_sp_peak_threshold_ratio: float = 0.08
+    pressure_peak_min_gap_ms: float = 150.0
+
+    sp_smooth_ms: float = 100.0
+    sp_min_after_bp_ms: float = 120.0
+    sp_consensus_tolerance_ms: float = 1000.0
+    sp_plateau_ms: float = 600.0
+    sp_plateau_ratio: float = 0.03
+    sp_plateau_min_ms: float = 400.0
+    sp_plateau_max_ms: float = 10000.0
+    sp_final_tolerance_ratio: float = 0.08
+    sp_progress_ratio: float = 0.92
+    sp_future_verify_ms: float = 4000.0
+    sp_future_motion_ratio: float = 0.06
+    sp_min_motion_floor: float = 0.02
+
+
 def ms_to_samples(ms: float, samplerate: int, minimum: int = 1) -> int: 
     n = int(round((ms / 1000.0) * samplerate))
     return max(minimum, n)
+
+
+def adaptive_ms_for_signal(
+    base_ms: float,
+    n_samples: int,
+    samplerate: int,
+    ratio: float,
+    min_ms: float,
+    max_ms: float,
+) -> float:
+    if n_samples <= 0 or samplerate <= 0:
+        return base_ms
+
+    duration_ms = (float(n_samples) / float(samplerate)) * 1000.0
+    adaptive_ms = duration_ms * ratio
+    return float(np.clip(max(base_ms, adaptive_ms, min_ms), min_ms, max_ms))
+
 
 def validate_signal_1d(signal: np.ndarray | list[float]) -> np.ndarray:
     x = np.asarray(signal, dtype=np.float32)
@@ -203,12 +218,34 @@ def moving_avg_guassian(x: np.ndarray, window: int) -> np.ndarray:
 
     return np.convolve(padded, kernel, mode = "valid").astype(np.float32)
 
+
+def gaussian_smooth_signal(
+    signal: np.ndarray | list[float],
+    samplerate: int,
+    window_ms: float,
+    polyorder: int = 2,
+) -> np.ndarray:
+    x = validate_signal_1d(signal)
+    if samplerate <= 0:
+        raise ValueError("samplerate must be more than 0")
+
+    window = ms_to_samples(window_ms, samplerate, minimum=polyorder + 2)
+    if window % 2 == 0:
+        window += 1
+
+    return moving_avg_guassian(x, min(window, max(1, x.size)))
+
 def safe_std(x: np.ndarray, eps: float = 1e-8) -> float:
     std = float(np.std(x))
     return max(std, eps)
 
     # Gaussian bump to get a soft location target (trying to start with a "general" location for PRP)
-def gaussian(n_samples: int, center: int, samplerate: int, sigma_ms: float) -> np.ndarray:
+def gaussian(
+    n_samples: int,
+    center: int,
+    samplerate: int,
+    sigma_ms: float,
+) -> np.ndarray:
     if n_samples <= 0:
         raise ValueError("n_samples must be more than 0")
     
@@ -231,14 +268,14 @@ def compute_shared_features(signal: np.ndarray | list[float], samplerate: int) -
     smooth_10_n = ms_to_samples(10.0, samplerate, minimum=3)
     smooth_15_n = ms_to_samples(15.0, samplerate, minimum=3)
 
-    smooth_10 = moving_avg(x, smooth_10_n)
+    smooth_10 = moving_avg_guassian(x, smooth_10_n)
     d1_10 = np.gradient(smooth_10).astype(np.float32)
     d2_10 = np.gradient(d1_10).astype(np.float32)
 
     abs_d1 = np.abs(d1_10).astype(np.float32)
     abs_d2 = np.abs(d2_10).astype(np.float32)
     
-    smooth_15 = moving_avg(x, smooth_15_n)
+    smooth_15 = moving_avg_guassian(x, smooth_15_n)
 
     return SharedSignalFeatures(
         signal=x,
@@ -559,14 +596,14 @@ def detect_prp(signal: np.ndarray, config: PRPConfig, shared: SharedSignalFeatur
             strength_signal=change_strength,
             inner_region_ratio=config.inner_region_ratio,
         )
-    
+
     return build_prp_result(selected_region)
 
 
 def strength_signal(future_drop: np.ndarray, local_std: np.ndarray, min_std: float = 1e-12) -> np.ndarray:
     safe_std = np.maximum(local_std, min_std)
     return future_drop / safe_std
-    
+
 # ------ BP Detection ------ #
 
 def detect_bp(
@@ -693,245 +730,6 @@ def detect_bp(
         return fallback_result
 
     return BPResult(start_index=None, end_index=None, bp_index=None, confidence=0.0, reason="no bp found")
-
-
-def detect_bp_multisensor(
-    pressure_signal: np.ndarray,
-    travel_signal: np.ndarray | None,
-    samplerate: int,
-    prp_index: int | None,
-    strain_signal: np.ndarray | None = None,
-    pressure_config: BPConfig | None = None,
-    multisensor_config: MultiSensorBPConfig | None = None,
-    shared_pressure: SharedSignalFeatures | None = None,
-) -> BPResult:
-    pressure_bp = detect_bp(
-        pressure_signal,
-        samplerate=samplerate,
-        prp_index=prp_index,
-        config=pressure_config,
-        shared=shared_pressure,
-    )
-
-    cfg = multisensor_config or MultiSensorBPConfig()
-
-    if prp_index is None:
-        return pressure_bp
-
-    if samplerate <= 0:
-        raise ValueError("samplerate must be more than 0")
-
-    smooth_n = ms_to_samples(cfg.travel_smooth_ms, samplerate, minimum=3)
-    sustain_n = ms_to_samples(cfg.sustain_window_ms, samplerate, minimum=3)
-    net_motion_n = ms_to_samples(cfg.net_drop_window_ms, samplerate, minimum=3)
-    slow_ramp_n = ms_to_samples(cfg.slow_ramp_window_ms, samplerate, minimum=3)
-    offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
-    max_shift_n = ms_to_samples(cfg.max_pressure_bp_shift_ms, samplerate)
-    def _main_motion_region(motion_signal: np.ndarray) -> tuple[int, int, np.ndarray, np.ndarray, bool, float, float] | None:
-        motion = validate_signal_1d(motion_signal)
-        search_start = max(prp_index + offset_n, 1)
-        search_end = min(int(round(motion.size * cfg.search_end_ratio)), motion.size - 1)
-
-        if pressure_bp.bp_index is not None:
-            search_end = min(search_end, pressure_bp.bp_index + max_shift_n)
-
-        if search_end <= search_start + sustain_n:
-            return None
-
-        smooth_motion = moving_avg(motion.astype(np.float32), smooth_n)
-        d1_motion = np.gradient(smooth_motion).astype(np.float32)
-        motion_window = smooth_motion[search_start:search_end]
-        window_net_motion = float(motion_window[-1] - motion_window[0]) if motion_window.size >= 2 else 0.0
-        positive_direction = window_net_motion >= 0.0
-
-        direction_strength = (
-            np.maximum(d1_motion, 0.0).astype(np.float32)
-            if positive_direction
-            else np.maximum(-d1_motion, 0.0).astype(np.float32)
-        )
-
-        strength_window = direction_strength[search_start:search_end]
-        if strength_window.size == 0:
-            return None
-
-        reference_peak = float(np.max(strength_window))
-        if reference_peak <= 0.0:
-            return None
-
-        onset_threshold = cfg.onset_threshold_ratio * reference_peak
-        motion_range = float(np.max(smooth_motion[search_start:search_end]) - np.min(smooth_motion[search_start:search_end]))
-        min_net_drop = cfg.min_net_drop_ratio * max(motion_range, 1e-8)
-
-        motion_mask = strength_window >= onset_threshold
-        regions = build_regions_with_stats(motion_mask, strength_window)
-        valid_regions: list[PRPRegion] = []
-
-        for region in regions:
-            region_start = search_start + region.start_index
-            region_end = search_start + region.end_index
-
-            if region_end - region_start + 1 < sustain_n:
-                continue
-            if region_start + net_motion_n >= motion.size:
-                continue
-
-            net_motion = float(smooth_motion[region_start + net_motion_n] - smooth_motion[region_start])
-            if positive_direction:
-                if net_motion < min_net_drop:
-                    continue
-            else:
-                if net_motion > -min_net_drop:
-                    continue
-
-            valid_regions.append(region)
-
-        if not valid_regions:
-            return None
-
-        main_region = max(valid_regions, key=lambda r: (r.area_strength, r.peak_strength, -r.start_index))
-        main_start = search_start + main_region.start_index
-        main_end = search_start + main_region.end_index
-        confidence = float(
-            np.clip(main_region.area_strength / (sum(r.area_strength for r in valid_regions) + 1e-8), 0.0, 1.0)
-        )
-        return main_start, main_end, smooth_motion, direction_strength, positive_direction, onset_threshold, confidence
-
-    def _strain_shift_inside_region(
-        smooth_strain: np.ndarray,
-        region_start: int,
-        region_end: int,
-    ) -> int | None:
-        if region_end <= region_start + sustain_n:
-            return None
-
-        d1_strain = np.gradient(smooth_strain).astype(np.float32)
-        local_window = d1_strain[region_start:region_end + 1]
-        if local_window.size < sustain_n:
-            return None
-
-        positive_direction = float(smooth_strain[region_end] - smooth_strain[region_start]) >= 0.0
-        direction_strength = (
-            np.maximum(d1_strain, 0.0).astype(np.float32)
-            if positive_direction
-            else np.maximum(-d1_strain, 0.0).astype(np.float32)
-        )
-        local_strength = direction_strength[region_start:region_end + 1]
-        peak = float(np.max(local_strength))
-        if peak <= 0.0:
-            return None
-
-        threshold = max(cfg.onset_threshold_ratio * peak, 0.35 * peak)
-        upper_bound = region_end - sustain_n + 1
-        for i in range(region_start, upper_bound + 1):
-            if float(direction_strength[i]) < threshold:
-                continue
-            sustain_slice = direction_strength[i:i + sustain_n]
-            if sustain_slice.size < sustain_n:
-                continue
-            if float(np.mean(sustain_slice)) < 0.75 * threshold:
-                continue
-            return i
-        return None
-
-    def _slow_travel_ramp_onset(motion_signal: np.ndarray) -> BPResult | None:
-        motion = validate_signal_1d(motion_signal)
-        search_start = max(prp_index + offset_n, 1)
-        search_end = min(int(round(motion.size * cfg.search_end_ratio)), motion.size - 1)
-
-        if search_end <= search_start + slow_ramp_n:
-            return None
-
-        smooth_motion = moving_avg(motion.astype(np.float32), smooth_n)
-        motion_window = smooth_motion[search_start:search_end]
-        motion_range = float(np.max(motion_window) - np.min(motion_window))
-        if motion_range <= 0.0:
-            return None
-
-        net_motion = float(motion_window[-1] - motion_window[0])
-        positive_direction = net_motion >= 0.0
-        min_net_motion = cfg.slow_ramp_min_net_motion_ratio * motion_range
-        baseline = float(np.median(smooth_motion[search_start:search_start + sustain_n]))
-
-        upper_bound = min(search_end - slow_ramp_n, motion.size - slow_ramp_n - 1)
-        for i in range(search_start, upper_bound + 1):
-            local_net_motion = float(smooth_motion[i + slow_ramp_n] - smooth_motion[i])
-            displacement_from_baseline = float(smooth_motion[i] - baseline)
-
-            if positive_direction:
-                if local_net_motion < min_net_motion:
-                    continue
-                if displacement_from_baseline > 0.15 * motion_range:
-                    continue
-            else:
-                if local_net_motion > -min_net_motion:
-                    continue
-                if displacement_from_baseline < -0.15 * motion_range:
-                    continue
-
-            direction_label = "positive" if positive_direction else "negative"
-            confidence = float(np.clip(abs(local_net_motion) / (motion_range + 1e-8), 0.0, 1.0))
-            return BPResult(
-                start_index=i,
-                end_index=min(i + slow_ramp_n, motion.size - 1),
-                bp_index=i,
-                confidence=confidence,
-                reason=f"travel slow {direction_label} ramp onset used for bp",
-            )
-
-        return None
-
-    travel_region = _main_motion_region(travel_signal) if travel_signal is not None else None
-    if travel_region is not None:
-        region_start, region_end, smooth_travel, direction_strength, positive_direction, onset_threshold, confidence = travel_region
-        if strain_signal is not None:
-            smooth_strain = moving_avg(validate_signal_1d(strain_signal).astype(np.float32), smooth_n)
-            strain_candidate = _strain_shift_inside_region(smooth_strain, region_start, region_end)
-            if strain_candidate is not None:
-                direction_label = "positive" if positive_direction else "negative"
-                return BPResult(
-                    start_index=region_start,
-                    end_index=region_end,
-                    bp_index=strain_candidate,
-                    confidence=confidence,
-                    reason=f"strain shift selected inside travel main {direction_label} motion region",
-                )
-
-        upper_bound = min(region_end, len(direction_strength) - sustain_n)
-        for i in range(region_start, upper_bound + 1):
-            if float(direction_strength[i]) < onset_threshold:
-                continue
-            sustain_slice = direction_strength[i:i + sustain_n]
-            if sustain_slice.size < sustain_n:
-                continue
-            if float(np.mean(sustain_slice)) < cfg.sustain_threshold_ratio * float(np.max(direction_strength[region_start:region_end + 1])):
-                continue
-            direction_label = "positive" if positive_direction else "negative"
-            return BPResult(
-                start_index=region_start,
-                end_index=region_end,
-                bp_index=i,
-                confidence=confidence,
-                reason=f"travel main {direction_label} motion region onset used for bp",
-            )
-
-    if travel_signal is not None:
-        slow_travel_ramp = _slow_travel_ramp_onset(travel_signal)
-        if slow_travel_ramp is not None:
-            return slow_travel_ramp
-
-    strain_region = _main_motion_region(strain_signal) if strain_signal is not None else None
-    if strain_region is not None:
-        region_start, region_end, _smooth, _strength, positive_direction, _threshold, confidence = strain_region
-        direction_label = "positive" if positive_direction else "negative"
-        return BPResult(
-            start_index=region_start,
-            end_index=region_end,
-            bp_index=region_start,
-            confidence=confidence,
-            reason=f"strain main {direction_label} motion region onset used as bp fallback",
-        )
-
-    return pressure_bp
 
 
 # -------- SP Detection ------- # 
@@ -1155,355 +953,570 @@ def detect_sp(
         )
 
 
-def detect_sp_multisensor(
+def _baseline_stats(
+    signal: np.ndarray,
+    samplerate: int,
+    baseline_ms: float,
+) -> tuple[float, float, int]:
+    baseline_n = min(signal.size, ms_to_samples(baseline_ms, samplerate, minimum=3))
+    baseline = signal[:baseline_n]
+    center = float(np.median(baseline))
+    mad = float(np.median(np.abs(baseline - center)))
+    robust_std = max(1.4826 * mad, safe_std(baseline, eps=1e-12))
+    return center, robust_std, baseline_n
+
+
+def detect_PRP_multivariat(
+    pressure_signal: np.ndarray,
+    samplerate: int,
+    config: MultivariatConfig | None = None,
+    shared_pressure: SharedSignalFeatures | None = None,
+) -> PRPResult:
+    cfg = config or MultivariatConfig()
+    pressure = gaussian_smooth_signal(
+        pressure_signal,
+        samplerate,
+        cfg.prp_smooth_ms,
+        polyorder=2,
+    )
+    baseline, baseline_std, baseline_n = _baseline_stats(
+        pressure,
+        samplerate,
+        cfg.prp_baseline_ms,
+    )
+    signal_range = max(float(np.max(pressure) - np.min(pressure)), baseline_std, 1e-12)
+    sustain_n = ms_to_samples(cfg.prp_sustain_ms, samplerate, minimum=3)
+    future_n = ms_to_samples(cfg.prp_future_confirm_ms, samplerate, minimum=sustain_n)
+    threshold = max(
+        cfg.prp_threshold_std_mult * baseline_std,
+        cfg.prp_threshold_range_ratio * signal_range,
+        cfg.prp_min_abs_change,
+    )
+
+    upper = max(baseline_n, pressure.size - max(sustain_n, future_n))
+    for index in range(baseline_n, upper + 1):
+        sustain_window = pressure[index:index + sustain_n]
+        if sustain_window.size < sustain_n:
+            continue
+        mean_dev = float(np.mean(np.abs(sustain_window - baseline)))
+        if mean_dev < threshold:
+            continue
+
+        future_window = pressure[index:index + future_n]
+        if future_window.size < future_n:
+            continue
+        future_change = abs(float(np.median(future_window)) - baseline)
+        if future_change < 0.8 * threshold:
+            continue
+
+        confidence = float(
+            np.clip(
+                0.5 * min(mean_dev / (threshold + 1e-12), 1.0)
+                + 0.5 * min(future_change / (threshold + 1e-12), 1.0),
+                0.0,
+                1.0,
+            )
+        )
+        return PRPResult(
+            start_index=index,
+            end_index=min(pressure.size - 1, index + sustain_n - 1),
+            prp_index=index,
+            confidence=confidence,
+            reason="multivariat pressure sustained baseline departure used for prp",
+        )
+
+    return PRPResult(None, None, None, 0.0, "no multivariat prp found")
+
+
+def _indices_within_tolerance(
+    index_a: int | None,
+    index_b: int | None,
+    tolerance_samples: int,
+) -> bool:
+    if index_a is None or index_b is None:
+        return False
+    return abs(index_a - index_b) <= tolerance_samples
+
+
+def _pressure_derivative_peaks(
+    *,
+    shared_features: SharedSignalFeatures,
+    samplerate: int,
+    prp_index: int,
+    start_ms: float,
+    min_gap_ms: float,
+    threshold_ratio: float,
+) -> list[tuple[int, int, int, float]]:
+    derivative = np.asarray(shared_features.abs_d1, dtype=np.float32)
+    if derivative.size < 3:
+        return []
+
+    search_start = max(1, prp_index + ms_to_samples(start_ms, samplerate, minimum=1))
+    search_end = min(derivative.size - 1, int(round(derivative.size * 0.95)))
+    if search_end <= search_start + 1:
+        return []
+
+    window = derivative[search_start:search_end]
+    if window.size < 3:
+        return []
+
+    peak_threshold = max(float(np.max(window)) * threshold_ratio, 1e-8)
+    min_gap = ms_to_samples(min_gap_ms, samplerate, minimum=1)
+    peaks: list[tuple[int, int, int, float]] = []
+
+    index = search_start
+    while index < search_end:
+        value = float(derivative[index])
+        if value < peak_threshold:
+            index += 1
+            continue
+
+        region_start = index
+        region_end = index
+        peak_index = index
+        peak_value = value
+
+        while region_end + 1 < search_end and float(derivative[region_end + 1]) >= peak_threshold:
+            region_end += 1
+            current_value = float(derivative[region_end])
+            if current_value > peak_value:
+                peak_value = current_value
+                peak_index = region_end
+
+        if peaks and region_start - peaks[-1][2] < min_gap:
+            prev_start, prev_peak, prev_end, prev_score = peaks[-1]
+            if peak_value > prev_score:
+                peaks[-1] = (prev_start, peak_index, region_end, peak_value)
+            else:
+                peaks[-1] = (prev_start, prev_peak, region_end, prev_score)
+        else:
+            peaks.append((region_start, peak_index, region_end, peak_value))
+
+        index = region_end + 1
+
+    if not peaks:
+        return []
+
+    max_peak = max(score for _start, _peak, _end, score in peaks)
+    return [
+        (start, peak, end, float(np.clip(score / (max_peak + 1e-12), 0.0, 1.0)))
+        for start, peak, end, score in peaks
+    ]
+
+
+def _bp_index_from_region(
+    region: tuple[int, int, int, float],
+    derivative: np.ndarray,
+    *,
+    use_settling_point: bool,
+) -> int:
+    region_start, peak_index, region_end, _score = region
+    if not use_settling_point:
+        return peak_index
+
+    peak_value = float(derivative[peak_index])
+    settle_threshold = 0.45 * peak_value
+    sustain_n = max(2, min(6, region_end - peak_index + 1))
+
+    for index in range(peak_index + 1, region_end + 1):
+        window_end = min(region_end + 1, index + sustain_n)
+        if window_end <= index:
+            continue
+        mean_level = float(np.mean(derivative[index:window_end]))
+        if mean_level <= settle_threshold:
+            return index
+
+    if region_end > peak_index:
+        return peak_index + max(1, (region_end - peak_index) // 3)
+
+    return peak_index
+
+
+def _pressure_bp_local_minimum(
+    pressure_signal: np.ndarray,
+    samplerate: int,
+    prp_index: int | None,
+    *,
+    config: MultivariatConfig,
+    shared_pressure: SharedSignalFeatures | None = None,
+) -> BPResult:
+    x = validate_signal_1d(pressure_signal)
+    if prp_index is None:
+        return BPResult(None, None, None, 0.0, "missing prp")
+
+    shared_features = shared_pressure or compute_shared_features(x, samplerate)
+    peaks = _pressure_derivative_peaks(
+        shared_features=shared_features,
+        samplerate=samplerate,
+        prp_index=prp_index,
+        start_ms=config.bp_search_start_ms,
+        min_gap_ms=config.pressure_peak_min_gap_ms,
+        threshold_ratio=config.pressure_peak_threshold_ratio,
+    )
+    if not peaks:
+        return BPResult(None, None, None, 0.0, "no pressure derivative bp peak found")
+
+    derivative = np.asarray(shared_features.abs_d1, dtype=np.float32)
+    region_count = len(peaks)
+    if region_count == 1:
+        bp_region = peaks[0]
+        best_index = _bp_index_from_region(bp_region, derivative, use_settling_point=True)
+        reason = "single clear pressure derivative region after prp; early settling point used for bp"
+    elif region_count == 2:
+        bp_region = peaks[0]
+        best_index = _bp_index_from_region(bp_region, derivative, use_settling_point=True)
+        reason = "two clear pressure derivative regions; bp taken where first region settles toward baseline"
+    else:
+        early_region_count = min(2, region_count)
+        early_regions = peaks[:early_region_count]
+        bp_region = max(early_regions, key=lambda region: region[3])
+        best_index = bp_region[1]
+        reason = "three or more clear pressure derivative regions; bp taken as strongest early peak"
+
+    _region_start, _peak_index, region_end, best_score = bp_region
+
+    window_n = ms_to_samples(120.0, samplerate, minimum=3)
+    search_start = max(1, prp_index + ms_to_samples(config.bp_search_start_ms, samplerate, minimum=1))
+    search_end = min(shared_features.abs_d1.size - 1, int(round(shared_features.abs_d1.size * 0.95)))
+    confidence = float(np.clip(best_score, 0.0, 1.0))
+    return BPResult(
+        start_index=max(search_start, best_index - window_n),
+        end_index=min(search_end, best_index + window_n),
+        bp_index=best_index,
+        confidence=confidence,
+        reason=reason,
+    )
+
+
+def _pressure_sp_after_bp(
+    pressure_signal: np.ndarray,
+    samplerate: int,
+    prp_index: int | None,
+    bp_index: int | None,
+    *,
+    config: MultivariatConfig,
+    shared_pressure: SharedSignalFeatures | None = None,
+) -> SPResult:
+    x = validate_signal_1d(pressure_signal)
+    if prp_index is None:
+        return SPResult(None, None, None, 0.0, "missing prp")
+
+    shared_features = shared_pressure or compute_shared_features(x, samplerate)
+    pressure = shared_features.smooth_15
+    peaks = _pressure_derivative_peaks(
+        shared_features=shared_features,
+        samplerate=samplerate,
+        prp_index=prp_index,
+        start_ms=config.bp_search_start_ms,
+        min_gap_ms=config.pressure_peak_min_gap_ms,
+        threshold_ratio=config.pressure_peak_threshold_ratio,
+    )
+    if not peaks:
+        return SPResult(None, None, None, 0.0, "no pressure derivative sp peak found")
+
+    region_count = len(peaks)
+    min_after_bp_n = ms_to_samples(config.sp_min_after_bp_ms, samplerate, minimum=1)
+    if region_count < 2:
+        return SPResult(None, None, None, 0.0, "fewer than two clear pressure derivative regions; no sp")
+
+    baseline_window_n = ms_to_samples(500.0, samplerate, minimum=3)
+    baseline_start = max(0, prp_index - baseline_window_n)
+    baseline_slice = pressure[baseline_start:prp_index] if prp_index > baseline_start else pressure[:baseline_window_n]
+    baseline = float(np.median(baseline_slice)) if baseline_slice.size else float(pressure[0])
+    tail_n = min(pressure.size, ms_to_samples(1000.0, samplerate, minimum=3))
+    final_level = float(np.median(pressure[-tail_n:]))
+    total_motion = max(abs(final_level - baseline), 1e-12)
+    progress = (
+        (pressure - baseline) / total_motion
+        if final_level >= baseline
+        else (baseline - pressure) / total_motion
+    )
+    event_limit_idx = pressure.size - 1
+    progress_threshold = min(0.92, max(0.75, config.sp_progress_ratio))
+    if bp_index is not None and bp_index + 1 < pressure.size:
+        for index in range(bp_index + 1, pressure.size):
+            if float(progress[index]) >= progress_threshold:
+                event_limit_idx = index
+                break
+
+    search_limit_n = ms_to_samples(400.0, samplerate, minimum=1)
+    valid_peaks = [
+        (start, peak, end, score)
+        for start, peak, end, score in peaks
+        if (bp_index is None or start > bp_index + min_after_bp_n)
+        and start <= event_limit_idx + search_limit_n
+    ]
+    if not valid_peaks:
+        return SPResult(None, None, None, 0.0, "no later pressure derivative region inside main event")
+
+    sp_region = valid_peaks[-1]
+    if region_count == 2:
+        reason = "two clear pressure derivative regions; sp taken as start of later separate region"
+    else:
+        reason = "last later separate pressure derivative region inside main event used for sp"
+
+    best_start, _best_peak, best_end, best_score = sp_region
+    if bp_index is not None and best_start <= bp_index + min_after_bp_n:
+        return SPResult(None, None, None, 0.0, "pressure sp region did not occur sufficiently after bp")
+
+    window_n = ms_to_samples(120.0, samplerate, minimum=3)
+    return SPResult(
+        start_index=max(0, best_start - window_n),
+        end_index=min(shared_features.abs_d1.size - 1, best_end + window_n),
+        sp_index=best_start,
+        confidence=float(np.clip(best_score, 0.0, 1.0)),
+        reason=reason,
+    )
+
+
+def detect_BP_multivariat(
+    pressure_signal: np.ndarray,
+    travel_signal: np.ndarray | None,
+    samplerate: int,
+    prp_index: int | None,
+    strain_signal: np.ndarray | None = None,
+    config: MultivariatConfig | None = None,
+    shared_pressure: SharedSignalFeatures | None = None,
+) -> BPResult:
+    cfg = config or MultivariatConfig()
+    pressure_bp = _pressure_bp_local_minimum(
+        pressure_signal,
+        samplerate,
+        prp_index,
+        config=cfg,
+        shared_pressure=shared_pressure,
+    )
+
+    if travel_signal is None:
+        return pressure_bp
+
+    travel = gaussian_smooth_signal(
+        travel_signal,
+        samplerate,
+        cfg.bp_smooth_ms,
+        polyorder=2,
+    )
+    baseline, baseline_std, baseline_n = _baseline_stats(
+        travel,
+        samplerate,
+        cfg.prp_baseline_ms,
+    )
+    travel_range = max(float(np.max(travel) - np.min(travel)), baseline_std, 1e-12)
+    tail_n = min(travel.size, ms_to_samples(1000.0, samplerate, minimum=3))
+    final_level = float(np.median(travel[-tail_n:]))
+    direction = 1.0 if final_level >= baseline else -1.0
+    d1 = np.gradient(travel).astype(np.float32)
+    directional_slope = (
+        np.maximum(d1, 0.0).astype(np.float32)
+        if direction >= 0.0
+        else np.maximum(-d1, 0.0).astype(np.float32)
+    )
+    slope_ref = max(float(np.percentile(directional_slope, 95)), 1e-12)
+    slope_threshold = cfg.bp_slope_threshold_ratio * slope_ref
+    sustain_n = ms_to_samples(60.0, samplerate, minimum=3)
+    slope_window_n = ms_to_samples(30.0, samplerate, minimum=3)
+    future_n = ms_to_samples(150.0, samplerate, minimum=sustain_n)
+    start_hint = baseline_n + ms_to_samples(cfg.bp_search_start_ms, samplerate, minimum=1)
+    if prp_index is not None:
+        pre_prp_tol = ms_to_samples(cfg.bp_pre_prp_tolerance_ms, samplerate, minimum=1)
+        start_hint = max(1, min(start_hint, max(1, prp_index - pre_prp_tol)))
+    upper = travel.size - max(sustain_n, future_n)
+    if upper <= start_hint:
+        return BPResult(None, None, None, 0.0, "not enough samples for multivariat bp")
+
+    deviation = travel - baseline if direction >= 0.0 else baseline - travel
+    deviation_threshold = max(0.12 * cfg.bp_min_progress_ratio * travel_range, 2.5 * baseline_std, 1e-8)
+    sustain_deviation_threshold = max(0.28 * cfg.bp_min_progress_ratio * travel_range, 3.0 * baseline_std, 1e-8)
+    slope_mean_threshold = 0.16 * slope_threshold
+    slope_peak_threshold = 0.35 * slope_threshold
+    min_progress = max(0.30 * cfg.bp_min_progress_ratio * travel_range, 2.5 * baseline_std)
+    travel_bp: BPResult | None = None
+    for index in range(start_hint, upper + 1):
+        sustain_window = deviation[index:index + sustain_n]
+        if sustain_window.size < sustain_n:
+            continue
+        mean_deviation = float(np.mean(sustain_window))
+        current_deviation = float(deviation[index])
+        if current_deviation < deviation_threshold and mean_deviation < sustain_deviation_threshold:
+            continue
+
+        slope_window = directional_slope[index:index + slope_window_n]
+        if slope_window.size < slope_window_n:
+            continue
+        mean_slope = float(np.mean(slope_window))
+        peak_slope = float(np.max(slope_window))
+        if mean_slope < slope_mean_threshold and peak_slope < slope_peak_threshold:
+            continue
+
+        future_window = travel[index:index + future_n]
+        if future_window.size < future_n:
+            continue
+        future_level = float(np.median(future_window))
+        future_progress = (
+            future_level - baseline
+            if direction >= 0.0
+            else baseline - future_level
+        )
+        if future_progress < min_progress:
+            continue
+        deviation_score = min(max(mean_deviation, current_deviation) / (sustain_deviation_threshold + 1e-12), 1.0)
+        slope_score = min(max(mean_slope / (slope_mean_threshold + 1e-12), peak_slope / (slope_peak_threshold + 1e-12)), 1.0)
+        progress_score = min(future_progress / (min_progress + 1e-12), 1.0)
+        confidence = float(np.clip(0.35 * deviation_score + 0.35 * slope_score + 0.30 * progress_score, 0.0, 1.0))
+        travel_bp = BPResult(
+            start_index=index,
+            end_index=min(travel.size - 1, index + sustain_n - 1),
+            bp_index=index,
+            confidence=confidence,
+            reason="multivariat first travel onset above deviation and slope noise floors used for bp",
+        )
+        break
+
+    if travel_bp is None:
+        return BPResult(None, None, None, 0.0, "no multivariat bp found")
+
+    tolerance_n = ms_to_samples(cfg.bp_consensus_tolerance_ms, samplerate, minimum=1)
+    if _indices_within_tolerance(travel_bp.bp_index, pressure_bp.bp_index, tolerance_n):
+        return BPResult(
+            start_index=travel_bp.start_index,
+            end_index=travel_bp.end_index,
+            bp_index=travel_bp.bp_index,
+            confidence=min(travel_bp.confidence, pressure_bp.confidence),
+            reason="multivariat travel onset confirmed by pressure minimum within tolerance used for bp",
+        )
+
+    return BPResult(None, None, None, 0.0, "travel bp and pressure bp disagree beyond tolerance")
+
+
+def detect_SP_multivariat(
     pressure_signal: np.ndarray,
     travel_signal: np.ndarray | None,
     samplerate: int,
     prp_index: int | None,
     bp_index: int | None,
     strain_signal: np.ndarray | None = None,
-    pressure_config: SPConfig | None = None,
-    multisensor_config: MultiSensorSPConfig | None = None,
+    config: MultivariatConfig | None = None,
     shared_pressure: SharedSignalFeatures | None = None,
 ) -> SPResult:
-    pressure_sp = detect_sp(
-        pressure_signal,
+    cfg = config or MultivariatConfig()
+    pressure_sp = _pressure_sp_after_bp(
+        pressure_signal=pressure_signal,
         samplerate=samplerate,
         prp_index=prp_index,
-        config=pressure_config,
-        shared=shared_pressure,
+        bp_index=bp_index,
+        config=cfg,
+        shared_pressure=shared_pressure,
     )
 
-    cfg = multisensor_config or MultiSensorSPConfig()
-
-    if prp_index is None:
+    if travel_signal is None:
         return pressure_sp
 
-    if samplerate <= 0:
-        raise ValueError("samplerate must be above 0")
-
-    smooth_n = ms_to_samples(cfg.travel_smooth_ms, samplerate, minimum=3)
-    motion_n = ms_to_samples(cfg.motion_window_ms, samplerate, minimum=3)
-    sustain_n = ms_to_samples(cfg.sustain_window_ms, samplerate, minimum=3)
-    plateau_n = ms_to_samples(cfg.plateau_window_ms, samplerate, minimum=3)
-    candidate_stride_n = ms_to_samples(cfg.candidate_stride_ms, samplerate, minimum=1)
-    post_sp_verify_n = ms_to_samples(cfg.post_sp_verify_window_ms, samplerate, minimum=3)
-    post_sp_tail_n = ms_to_samples(cfg.post_sp_tail_window_ms, samplerate, minimum=3)
-    offset_n = ms_to_samples(cfg.search_start_offset_ms, samplerate)
-    travel_candidate_rejected_after_motion = False
-
-    def _settle_region(
-        motion_signal: np.ndarray,
-        *,
-        require_post_sp_quiet: bool = False,
-    ) -> tuple[int, int, np.ndarray, np.ndarray, bool, float, float] | None:
-        nonlocal travel_candidate_rejected_after_motion
-
-        motion = validate_signal_1d(motion_signal)
-        search_anchor = bp_index if bp_index is not None else prp_index
-        search_start = max(search_anchor + offset_n, 1)
-        search_end = min(int(round(motion.size * cfg.search_end_ratio)), motion.size - 1)
-
-        if search_end <= search_start + max(motion_n, plateau_n):
-            return None
-
-        smooth_motion = moving_avg(motion.astype(np.float32), smooth_n)
-        d1_motion = np.gradient(smooth_motion).astype(np.float32)
-
-        direction_window = smooth_motion[search_start:search_end]
-        if direction_window.size < 2:
-            return None
-
-        window_net_motion = float(direction_window[-1] - direction_window[0])
-        positive_direction = window_net_motion >= 0.0
-
-        direction_strength = (
-            np.maximum(d1_motion, 0.0).astype(np.float32)
-            if positive_direction
-            else np.maximum(-d1_motion, 0.0).astype(np.float32)
-        )
-        strength_window = direction_strength[search_start:search_end]
-        if strength_window.size == 0:
-            return None
-
-        reference_peak = float(np.max(strength_window))
-        if reference_peak <= 0.0:
-            return None
-
-        motion_threshold = cfg.motion_threshold_ratio * reference_peak
-        motion_range = float(np.max(direction_window) - np.min(direction_window))
-        max_settle_motion = cfg.max_settle_motion_ratio * max(motion_range, 1e-8)
-
-        motion_start: int | None = None
-        upper_motion_bound = min(search_end - sustain_n - 1, motion.size - 2)
-
-        for i in range(search_start, upper_motion_bound + 1):
-            if float(direction_strength[i]) < motion_threshold:
-                continue
-            sustain_slice = direction_strength[i:i + sustain_n]
-            if sustain_slice.size < sustain_n:
-                continue
-            if float(np.mean(sustain_slice)) < motion_threshold:
-                continue
-            motion_start = i
-            break
-
-        if motion_start is None:
-            return None
-
-        def _support_derivative(support_signal: np.ndarray | None) -> tuple[np.ndarray, float] | None:
-            if support_signal is None:
-                return None
-
-            support = validate_signal_1d(support_signal)
-            smooth_support = moving_avg(support.astype(np.float32), smooth_n)
-            d1_support = np.gradient(smooth_support).astype(np.float32)
-            support_window = np.abs(d1_support[search_start:search_end]).astype(np.float32)
-            if support_window.size == 0:
-                return None
-
-            reference = float(np.percentile(support_window, 90)) + 1e-8
-            return d1_support, reference
-
-        def _support_score(support_features: tuple[np.ndarray, float] | None, candidate_index: int) -> float:
-            if support_features is None:
-                return 0.0
-
-            d1_support, reference = support_features
-            if candidate_index + plateau_n >= d1_support.size:
-                return 0.0
-
-            local_motion = float(np.mean(np.abs(d1_support[candidate_index:candidate_index + plateau_n])))
-            return float(np.clip(1.0 - (local_motion / reference), 0.0, 1.0))
-
-        pressure_support = _support_derivative(pressure_signal)
-        strain_support = _support_derivative(strain_signal)
-
-        candidates: list[tuple[float, int, int, float]] = []
-        settle_start = max(motion_start + sustain_n, search_start)
-        upper_plateau_bound = min(search_end - plateau_n - 1, motion.size - plateau_n - 1)
-        for i in range(settle_start, upper_plateau_bound + 1, candidate_stride_n):
-            history = direction_strength[motion_start:i]
-            if history.size < sustain_n:
-                continue
-
-            local_peak = float(np.max(history))
-            if local_peak < motion_threshold:
-                continue
-
-            plateau_slice = direction_strength[i:i + plateau_n]
-            if plateau_slice.size < plateau_n:
-                continue
-
-            plateau_mean = float(np.mean(plateau_slice))
-            plateau_max = float(np.max(plateau_slice))
-            plateau_threshold = cfg.plateau_threshold_ratio * local_peak
-            if plateau_mean > max(plateau_threshold, 0.35 * local_peak):
-                continue
-
-            net_motion = float(smooth_motion[i + plateau_n] - smooth_motion[i])
-            if positive_direction:
-                if net_motion > max_settle_motion:
-                    continue
-            else:
-                if net_motion < -max_settle_motion:
-                    continue
-
-            slowdown_score = float(np.clip(1.0 - (plateau_mean / (local_peak + 1e-8)), 0.0, 1.0))
-            max_slowdown_score = float(np.clip(1.0 - (plateau_max / (local_peak + 1e-8)), 0.0, 1.0))
-            pressure_score = _support_score(pressure_support, i)
-            strain_score = _support_score(strain_support, i)
-            time_fraction = (i - search_start) / max(1, search_end - search_start)
-            early_bonus = 1.0 - float(np.clip(time_fraction, 0.0, 1.0))
-            score = (
-                0.45 * slowdown_score
-                + 0.15 * max_slowdown_score
-                + 0.20 * pressure_score
-                + 0.15 * strain_score
-                + 0.05 * early_bonus
-            )
-
-            if score < cfg.min_travel_slowdown_score:
-                continue
-
-            region_end = i + plateau_n - 1
-            candidates.append((score, i, region_end, local_peak))
-
-        if candidates:
-            stable_candidates = candidates
-            if require_post_sp_quiet:
-                max_late_motion = max(
-                    cfg.post_sp_min_motion,
-                    cfg.post_sp_max_motion_ratio * max(motion_range, 1e-8),
-                )
-
-                def _stays_quiet_after_sp(candidate: tuple[float, int, int, float]) -> bool:
-                    _score, _candidate_index, candidate_region_end, _local_peak = candidate
-                    verify_start = min(candidate_region_end + 1, search_end)
-                    verify_end = min(search_end, verify_start + post_sp_verify_n)
-                    if verify_end <= verify_start + plateau_n:
-                        return True
-
-                    future_window = smooth_motion[verify_start:verify_end]
-                    if future_window.size < plateau_n:
-                        return True
-
-                    future_motion = float(np.max(future_window) - np.min(future_window))
-                    if future_motion > max_late_motion:
-                        return False
-
-                    if motion_range <= cfg.post_sp_small_range_threshold:
-                        full_future_window = smooth_motion[verify_start:search_end]
-                        if full_future_window.size >= plateau_n:
-                            full_future_motion = float(
-                                np.max(full_future_window) - np.min(full_future_window)
-                            )
-                            max_full_future_motion = max(
-                                cfg.post_sp_min_motion,
-                                cfg.post_sp_tail_motion_ratio * max(motion_range, 1e-8),
-                            )
-                            if full_future_motion > max_full_future_motion:
-                                return False
-
-                        tail_start = max(verify_start, search_end - post_sp_tail_n)
-                        tail_window = smooth_motion[tail_start:search_end]
-                        if tail_window.size >= plateau_n:
-                            tail_motion = float(np.max(tail_window) - np.min(tail_window))
-                            max_tail_motion = max(
-                                cfg.post_sp_min_motion,
-                                cfg.post_sp_tail_motion_ratio * max(motion_range, 1e-8),
-                            )
-                            if tail_motion > max_tail_motion:
-                                return False
-
-                    return True
-
-                stable_candidates = [
-                    candidate
-                    for candidate in candidates
-                    if _stays_quiet_after_sp(candidate)
-                ]
-                if not stable_candidates:
-                    travel_candidate_rejected_after_motion = True
-                    return None
-
-            best_score = max(score for score, _index, _region_end, _local_peak in stable_candidates)
-            min_early_score = cfg.early_candidate_score_ratio * best_score
-            score, candidate_index, region_end, local_peak = next(
-                candidate
-                for candidate in stable_candidates
-                if candidate[0] >= min_early_score
-            )
-            confidence = float(np.clip(score, 0.0, 1.0))
-            return (
-                candidate_index,
-                region_end,
-                smooth_motion,
-                direction_strength,
-                positive_direction,
-                local_peak,
-                confidence,
-            )
-
-        return None
-
-    def _strain_settle_inside_region(
-        smooth_strain: np.ndarray,
-        region_start: int,
-        region_end: int,
-    ) -> int | None:
-        if region_end <= region_start + plateau_n:
-            return None
-
-        d1_strain = np.gradient(smooth_strain).astype(np.float32)
-        local_window = d1_strain[region_start:region_end + 1]
-        if local_window.size < plateau_n:
-            return None
-
-        positive_direction = float(smooth_strain[region_end] - smooth_strain[region_start]) >= 0.0
-        direction_strength = (
-            np.maximum(d1_strain, 0.0).astype(np.float32)
-            if positive_direction
-            else np.maximum(-d1_strain, 0.0).astype(np.float32)
-        )
-        local_strength = direction_strength[region_start:region_end + 1]
-        peak = float(np.max(local_strength))
-        if peak <= 0.0:
-            return None
-
-        plateau_threshold = cfg.plateau_threshold_ratio * peak
-        upper_bound = region_end - plateau_n + 1
-        for i in range(region_start, upper_bound + 1):
-            plateau_slice = direction_strength[i:i + plateau_n]
-            if plateau_slice.size < plateau_n:
-                continue
-            if float(np.mean(plateau_slice)) > plateau_threshold:
-                continue
-            return i
-        return None
-
-    travel_region = (
-        _settle_region(travel_signal, require_post_sp_quiet=True)
-        if travel_signal is not None
-        else None
+    travel = gaussian_smooth_signal(
+        travel_signal,
+        samplerate,
+        cfg.sp_smooth_ms,
+        polyorder=2,
     )
-    if travel_region is not None:
-        region_start, region_end, _smooth, _strength, positive_direction, _reference_peak, confidence = travel_region
-        if strain_signal is not None:
-            smooth_strain = moving_avg(validate_signal_1d(strain_signal).astype(np.float32), smooth_n)
-            strain_candidate = _strain_settle_inside_region(smooth_strain, region_start, region_end)
-            if strain_candidate is not None:
-                direction_label = "positive" if positive_direction else "negative"
-                return SPResult(
-                    start_index=region_start,
-                    end_index=region_end,
-                    sp_index=strain_candidate,
-                    confidence=confidence,
-                    reason=f"strain settling selected inside travel {direction_label} plateau region",
-                )
-
-        direction_label = "positive" if positive_direction else "negative"
-        return SPResult(
-            start_index=region_start,
-            end_index=region_end,
-            sp_index=region_start,
-            confidence=confidence,
-            reason=f"travel {direction_label} motion settled into plateau region used for sp",
-        )
-
-    if travel_candidate_rejected_after_motion:
-        return SPResult(
-            start_index=None,
-            end_index=None,
-            sp_index=None,
-            confidence=0.0,
-            reason="travel sp candidate rejected because travel moved again after sp",
-        )
-
-    strain_region = _settle_region(strain_signal) if strain_signal is not None else None
-    if strain_region is not None:
-        region_start, region_end, _smooth, _strength, positive_direction, _reference_peak, confidence = strain_region
-        direction_label = "positive" if positive_direction else "negative"
-        return SPResult(
-            start_index=region_start,
-            end_index=region_end,
-            sp_index=region_start,
-            confidence=confidence,
-            reason=f"strain {direction_label} plateau region used as sp fallback",
-        )
-
-    if cfg.fallback_to_pressure_sp:
-        if bp_index is None or pressure_sp.sp_index is None or pressure_sp.sp_index >= bp_index:
-            return pressure_sp
-
-    return SPResult(
-        start_index=None,
-        end_index=None,
-        sp_index=None,
-        confidence=0.0,
-        reason="no valid multisensor sp found after bp",
+    baseline, baseline_std, baseline_n = _baseline_stats(
+        travel,
+        samplerate,
+        cfg.prp_baseline_ms,
     )
-        
+    travel_range = max(float(np.max(travel) - np.min(travel)), baseline_std, 1e-12)
+    tail_n = min(travel.size, ms_to_samples(1000.0, samplerate, minimum=3))
+    final_level = float(np.median(travel[-tail_n:]))
+    total_motion = max(abs(final_level - baseline), 1e-12)
+    plateau_ms = adaptive_ms_for_signal(
+        base_ms=cfg.sp_plateau_ms,
+        n_samples=travel.size,
+        samplerate=samplerate,
+        ratio=cfg.sp_plateau_ratio,
+        min_ms=cfg.sp_plateau_min_ms,
+        max_ms=cfg.sp_plateau_max_ms,
+    )
+    plateau_n = ms_to_samples(plateau_ms, samplerate, minimum=3)
+    future_n = ms_to_samples(cfg.sp_future_verify_ms, samplerate, minimum=plateau_n)
+    min_after_bp_n = ms_to_samples(cfg.sp_min_after_bp_ms, samplerate, minimum=1)
+    search_start = max(baseline_n, 1)
+    if bp_index is not None:
+        search_start = max(search_start, bp_index + min_after_bp_n)
+    upper = travel.size - plateau_n
+    if upper <= search_start:
+        return SPResult(None, None, None, 0.0, "not enough samples for multivariat sp")
+
+    d1 = np.gradient(travel).astype(np.float32)
+    slope_ref = max(float(np.percentile(np.abs(d1), 95)), 1e-12)
+    local_slope_threshold = 0.10 * slope_ref
+    final_tolerance = max(cfg.sp_final_tolerance_ratio * travel_range, 6.0 * baseline_std)
+    future_motion_limit = max(
+        cfg.sp_future_motion_ratio * travel_range,
+        cfg.sp_min_motion_floor,
+        6.0 * baseline_std,
+    )
+
+    travel_sp: SPResult | None = None
+    for index in range(search_start, upper + 1):
+        plateau_window = travel[index:index + plateau_n]
+        if plateau_window.size < plateau_n:
+            continue
+
+        candidate_level = float(np.median(plateau_window))
+        local_range = float(np.max(plateau_window) - np.min(plateau_window))
+        local_slope = float(np.mean(np.abs(d1[index:index + plateau_n])))
+        remaining = abs(final_level - candidate_level)
+        progress = abs(candidate_level - baseline) / total_motion
+
+        if progress < cfg.sp_progress_ratio:
+            continue
+        if remaining > final_tolerance:
+            continue
+        if local_range > future_motion_limit:
+            continue
+        if local_slope > local_slope_threshold:
+            continue
+
+        future_end = min(travel.size, index + future_n)
+        future_window = travel[index:future_end]
+        if future_window.size >= plateau_n:
+            future_motion = float(np.max(future_window) - np.min(future_window))
+            if future_motion > future_motion_limit:
+                continue
+
+        quiet_score = 1.0 - min(local_range / (future_motion_limit + 1e-12), 1.0)
+        final_score = 1.0 - min(remaining / (final_tolerance + 1e-12), 1.0)
+        progress_score = min(progress, 1.0)
+        confidence = float(
+            np.clip(
+                0.35 * quiet_score + 0.35 * final_score + 0.30 * progress_score,
+                0.0,
+                1.0,
+            )
+        )
+        travel_sp = SPResult(
+            start_index=index,
+            end_index=min(travel.size - 1, index + plateau_n - 1),
+            sp_index=index,
+            confidence=confidence,
+            reason="multivariat first true near-final travel flattening used for sp",
+        )
+        break
+
+    if travel_sp is None:
+        return SPResult(None, None, None, 0.0, "no multivariat sp found")
+
+    tolerance_n = ms_to_samples(cfg.sp_consensus_tolerance_ms, samplerate, minimum=1)
+    if _indices_within_tolerance(travel_sp.sp_index, pressure_sp.sp_index, tolerance_n):
+        return SPResult(
+            start_index=travel_sp.start_index,
+            end_index=travel_sp.end_index,
+            sp_index=travel_sp.sp_index,
+            confidence=min(travel_sp.confidence, pressure_sp.confidence),
+            reason="multivariat travel plateau confirmed by pressure sp within tolerance used for sp",
+        )
+
+    return SPResult(None, None, None, 0.0, "travel sp and pressure sp disagree beyond tolerance")
+
+
 # ------------ Target builders --------- #
 
 # if PRP is found, PRP will be the center of the gaussian bump
@@ -1511,7 +1524,7 @@ def build_prp_target(
     n_samples: int,
     prp_index: int | None,
     samplerate: int,
-    sigma_ms: float = 10.0 
+    sigma_ms: float = 10.0,
 ) -> np.ndarray:
     if prp_index is None:
         return np.zeros(n_samples, dtype = np.float32)
@@ -1520,14 +1533,14 @@ def build_prp_target(
         n_samples = n_samples,
         center = prp_index, 
         samplerate = samplerate,
-        sigma_ms = sigma_ms
+        sigma_ms = sigma_ms,
     )
 
 def build_bp_target(
     n_samples: int,
     bp_index: int | None,
     samplerate: int,
-    sigma_ms: float = 10.0 
+    sigma_ms: float = 10.0,
 ) -> np.ndarray:
     if bp_index is None:
         return np.zeros(n_samples, dtype = np.float32)
@@ -1536,14 +1549,14 @@ def build_bp_target(
         n_samples = n_samples,
         center = bp_index, 
         samplerate = samplerate,
-        sigma_ms = sigma_ms
+        sigma_ms = sigma_ms,
     )
 
 def build_sp_target(
     n_samples: int,
     sp_index: int | None,
     samplerate: int,
-    sigma_ms: float = 10.0 
+    sigma_ms: float = 10.0,
 ) -> np.ndarray:
     if sp_index is None:
         return np.zeros(n_samples, dtype = np.float32)
@@ -1552,5 +1565,5 @@ def build_sp_target(
         n_samples = n_samples,
         center = sp_index, 
         samplerate = samplerate,
-        sigma_ms = sigma_ms
+        sigma_ms = sigma_ms,
     )

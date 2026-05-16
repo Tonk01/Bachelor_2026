@@ -11,15 +11,15 @@ from scipy.signal import resample_poly
 
 from .targets import (
     BPConfig,
-    MultiSensorBPConfig,
-    MultiSensorSPConfig,
+    MultivariatConfig,
     PRPConfig,
     SPConfig,
+    detect_BP_multivariat,
+    detect_PRP_multivariat,
+    detect_SP_multivariat,
     detect_bp,
-    detect_bp_multisensor,
     detect_prp,
     detect_sp,
-    detect_sp_multisensor,
     moving_avg,
 )
 
@@ -425,28 +425,31 @@ def inspect_multisensor_event(args: argparse.Namespace) -> None:
     bp_cfg = BPConfig()
     sp_cfg = SPConfig()
 
-    prp_result = detect_prp(pressure_signal, prp_cfg)
+    multivariat_cfg = MultivariatConfig()
+    prp_result = detect_PRP_multivariat(
+        pressure_signal=pressure_signal,
+        samplerate=samplerate,
+        config=multivariat_cfg,
+    )
     travel_signal = resampled_signals.get("travel")
     strain_signal = resampled_signals.get("strain")
     if "travel" in resampled_signals:
-        bp_result = detect_bp_multisensor(
+        bp_result = detect_BP_multivariat(
             pressure_signal=pressure_signal,
             travel_signal=travel_signal,
             samplerate=samplerate,
             prp_index=prp_result.prp_index,
             strain_signal=strain_signal,
-            pressure_config=bp_cfg,
-            multisensor_config=MultiSensorBPConfig(),
+            config=multivariat_cfg,
         )
     elif "strain" in resampled_signals:
-        bp_result = detect_bp_multisensor(
+        bp_result = detect_BP_multivariat(
             pressure_signal=pressure_signal,
             travel_signal=None,
             samplerate=samplerate,
             prp_index=prp_result.prp_index,
             strain_signal=strain_signal,
-            pressure_config=bp_cfg,
-            multisensor_config=MultiSensorBPConfig(),
+            config=multivariat_cfg,
         )
     else:
         bp_result = detect_bp(
@@ -456,26 +459,24 @@ def inspect_multisensor_event(args: argparse.Namespace) -> None:
             config=bp_cfg,
         )
     if "travel" in resampled_signals:
-        sp_result = detect_sp_multisensor(
+        sp_result = detect_SP_multivariat(
             pressure_signal=pressure_signal,
             travel_signal=travel_signal,
             samplerate=samplerate,
             prp_index=prp_result.prp_index,
             bp_index=bp_result.bp_index,
             strain_signal=strain_signal,
-            pressure_config=sp_cfg,
-            multisensor_config=MultiSensorSPConfig(),
+            config=multivariat_cfg,
         )
     elif "strain" in resampled_signals:
-        sp_result = detect_sp_multisensor(
+        sp_result = detect_SP_multivariat(
             pressure_signal=pressure_signal,
             travel_signal=None,
             samplerate=samplerate,
             prp_index=prp_result.prp_index,
             bp_index=bp_result.bp_index,
             strain_signal=strain_signal,
-            pressure_config=sp_cfg,
-            multisensor_config=MultiSensorSPConfig(),
+            config=multivariat_cfg,
         )
     else:
         sp_result = detect_sp(

@@ -399,7 +399,7 @@ def main() -> None:
     )
 
     history_json = {
-        key: [float(x) for x in values]
+        key: [None if x is None else float(x) for x in values]
         for key, values in history.items()
     }
 
